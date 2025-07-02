@@ -1,3 +1,14 @@
+# Discord Nmap Scanner Bot
+# Send nmap scans to the bot and it will do a scan for you.
+# - Listens for !scan commands in Discord and runs Nmap with various options
+# - Supports TCP top-ports, version detection, OS detection, UDP scan, and ping-only
+# - Resolves hostnames, blocks RFC1918 private and loopback ranges
+# - Prevents concurrent scans per user and returns formatted results in-channel
+# - Logs every command invocation to a rotating file (commands.log)
+# - Custom !help command lists available scans and detailed usage
+# - Uses asyncio to run scans off the main thread for non-blocking operation
+
+
 import discord
 import socket
 import ipaddress

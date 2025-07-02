@@ -1,3 +1,13 @@
+# Discord “UwU” Voice Bot
+# Joins a random, occupied voice chat. Picks a random mp3 from the sounds folder, plays the sound and then leave voice chat.
+# - Automatically joins a random active voice channel every 20 minutes
+# - Plays a random MP3 from a specified folder, then disconnects
+# - Administrator command !setinterval to adjust the loop frequency
+# - Owner‐only !shutdown command for graceful bot termination
+# - Logs in with a hardcoded token and sets presence to “Watching UwU”
+# - Requires FFmpeg and discord.py[voice] for audio playback
+
+
 import os
 import random
 import asyncio

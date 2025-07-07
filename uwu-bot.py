@@ -7,7 +7,6 @@
 # - Logs in with a hardcoded token and sets presence to “Watching UwU”
 # - Requires FFmpeg and discord.py[voice] for audio playback
 
-
 import os
 import random
 import asyncio

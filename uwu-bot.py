@@ -1,6 +1,6 @@
 # Discord “UwU” Voice Bot
 # Joins a random, occupied voice chat. Picks a random mp3 from the sounds folder, plays the sound and then leave voice chat.
-# - Automatically joins a random active voice channel every 20 minutes
+# - Automatically joins a random active voice channel every 30 minutes
 # - Plays a random MP3 from a specified folder, then disconnects
 # - Administrator command !setinterval to adjust the loop frequency
 # - Owner‐only !shutdown command for graceful bot termination
@@ -25,13 +25,14 @@ import discord
 # Bot setup --- Hard-coded settings ---
 token = "Your Mothers Token Goes Here"
 uwu_folder = "/uwu/sounds/dir/here"   # full absolute path to your MP3 folder
+prefix = '!'
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix=prefix, intents=intents)
 
 @bot.event
 async def on_ready():
@@ -41,7 +42,7 @@ async def on_ready():
     if not join_and_uwu.is_running():
         join_and_uwu.start()
 
-@tasks.loop(minutes=20)
+@tasks.loop(minutes=30)
 async def join_and_uwu():
     """
     Every 30 minutes, picks a random voice channel with active users,
@@ -84,6 +85,13 @@ async def join_and_uwu():
 
     await vc.disconnect()
 
+# Manual trigger:
+@bot.command(name='run')
+async def run_uwu(ctx):
+    """Manually trigger one UwU playthrough."""
+    await ctx.send("🎶 Running UwU now!")
+    await join_and_uwu()
+
 # Command to change interval (optional)
 @bot.command(name='setinterval')
 @commands.has_permissions(administrator=True)
@@ -92,12 +100,25 @@ async def set_interval(ctx, minutes: int):
     join_and_uwu.change_interval(minutes=minutes)
     await ctx.send(f"Loop interval set to {minutes} minutes.")
 
-# Graceful shutdown
-@bot.command(name='shutdown')
+# Start the auto-join loop
+@bot.command(name='start')
 @commands.is_owner()
-async def shutdown(ctx):
-    await ctx.send("Shutting down...")
-    await bot.close()
+async def start_uwu(ctx):
+    if not join_and_uwu.is_running():
+        join_and_uwu.start()
+        await ctx.send("✅ UwU loop started.")
+    else:
+        await ctx.send("⚠️ UwU loop is already running.")
+
+# Stop the auto-join loop
+@bot.command(name='stop')
+@commands.is_owner()
+async def stop_uwu(ctx):
+    if join_and_uwu.is_running():
+        join_and_uwu.cancel()
+        await ctx.send("⏸️ UwU loop stopped.")
+    else:
+        await ctx.send("⚠️ UwU loop is not running.")
 
 if __name__ == '__main__':
     if not token:

@@ -1,16 +1,12 @@
 # Discord Nmap Scanner Bot
-# A Discord bot that runs Nmap scans on demand and returns both a concise summary
-# and the full raw output in a code block.
-# - Listens for !scan, !scan_v, !scan_o, !scan_u, !scan_ping, and !scan_custom
-# - Supports custom nmap arguments via !scan_custom
-# - Blocks RFC1918 private and loopback ranges; rejects whole‐subnet targets
-# - Warns on RFC5735 special‐use addresses but still proceeds
-# - Enforces single‐IP targets, disallowing CIDR scans
-# - Parses and formats port/service results, then appends raw Nmap stdout
-# - Prevents concurrent scans per user
-# - Logs every invocation to a rotating commands.log file
-# - Uses asyncio + subprocess for non‐blocking scan execution
-# - Token can be loaded from an environment variable for security
+# Send nmap scans to the bot and it will do a scan for you.
+# - Listens for !scan commands in Discord and runs Nmap with various options
+# - Supports TCP top-ports, version detection, OS detection, UDP scan, ping-only, and custom scans
+# - Resolves hostnames, blocks RFC1918 private and loopback ranges
+# - Prevents concurrent scans per user and returns formatted results in-channel
+# - Logs every command invocation to a rotating file (commands.log)
+# - Custom !help command lists available scans and detailed usage
+# - Uses asyncio to run scans off the main thread for non-blocking operation
 
 import discord
 import socket
@@ -20,14 +16,15 @@ import time
 import subprocess
 import shlex
 import logging
+import io
+from collections import deque
 from logging.handlers import RotatingFileHandler
 from discord.ext import commands
 
 # *********setup stuff************
 # python3 -m venv .venv
 # source .venv/bin/activate
-# python3 -m pip install -U discord.py
-# python3 -m pip install -U python-nmap
+# python3 -m pip install -U discord.py python-nmap
 # deactivate
 # https://discord.com/oauth2/authorize?client_id=YOUR_APPID_HERE&permissions=395137068032&scope=bot+applications.commands
 # - Need to allow permissions for OS scanning.
@@ -37,11 +34,9 @@ from discord.ext import commands
 # ----------------------------------------
 # Configuration
 # ----------------------------------------
-
-TOKEN = 'Your_mothers_discord_token_here'
+TOKEN = 'Your Mothers Discord Token Goes Here'
 # You can also use an env variable if you want. This is sometimes flaky, no idea why.
 # os.environ['DISCORD_TOKEN']
-
 
 # Deny scanning of RFC 1918
 PRIVATE_NETWORKS = [
@@ -121,7 +116,7 @@ def is_forbidden(ip_str):
 
 def resolve_and_validate(target):
     #----------------------------------------
-    # Disallow whole‐subnet scans 
+    # Disallow whole‐subnet scans
     #----------------------------------------
     if '/' in target:
         try:
@@ -289,6 +284,36 @@ async def scan_custom(ctx, target: str, *, nmap_args: str):
         'name': 'scan_custom'
     }
     await ctx.send(f"🔍 Started `scan_custom` on {target} with args `{nmap_args}`. I’ll let you know when it’s done.")
+
+# ----------------------------------------
+# Logs Command (admin only)
+# ----------------------------------------
+@bot.command(name='logs', help='(Admin only) Show the last 20 entries from the command log.')
+@commands.has_permissions(administrator=True)
+async def logs(ctx):
+    def tail():
+        with open('commands.log', 'r', encoding='utf-8') as f:
+            return list(deque(f, maxlen=20))
+    try:
+        lines = await asyncio.to_thread(tail)
+        if not lines:
+            return await ctx.send("⚠️ No log entries found.")
+
+        content = "".join(lines)
+        if len(content) < 1900:
+            await ctx.send(f"```{content}```")
+        else:
+            fp = io.StringIO(content)
+            await ctx.send("Log too long; sending as file:", file=discord.File(fp, filename='last_20_logs.txt'))
+    except Exception as e:
+        await ctx.send(f"❌ Could not read log file: {e}")
+
+@logs.error
+async def logs_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ You need Administrator permissions to use this command.")
+    else:
+        raise error
 
 # ----------------------------------------
 # Help Command Registration

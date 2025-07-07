@@ -3,7 +3,7 @@
 # - Automatically joins a random active voice channel every 30 minutes
 # - Plays a random MP3 from a specified folder, then disconnects
 # - Administrator command !setinterval to adjust the loop frequency
-# - Owner‐only !shutdown command for graceful bot termination
+# - User !start or !stop command for starting or stopping the bot
 # - Logs in with a hardcoded token and sets presence to “Watching UwU”
 # - Requires FFmpeg and discord.py[voice] for audio playback
 

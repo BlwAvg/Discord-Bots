@@ -154,6 +154,9 @@ async def run_nmap(ctx, target, nmap_args):
             text=True
         )
         raw = proc.stdout
+    except FileNotFoundError:
+        await ctx.send("❌ Could not find the `nmap` binary. Please install Nmap and make sure it’s on the PATH.")
+        return
     except Exception as e:
         await ctx.send(f"⚠️ Scan error: {e}")
         return

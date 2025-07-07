@@ -27,6 +27,7 @@ from discord.ext import commands
 # python3 -m venv .venv
 # source .venv/bin/activate
 # python3 -m pip install -U discord.py
+# python3 -m pip install -U python-nmap
 # deactivate
 # https://discord.com/oauth2/authorize?client_id=YOUR_APPID_HERE&permissions=395137068032&scope=bot+applications.commands
 # - Need to allow permissions for OS scanning.

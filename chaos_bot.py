@@ -50,6 +50,7 @@ CANNED_RESPONSES = [
     "source: trust me bro",
     "this claim is under investigation 🔎",
     "fact check: vibes are questionable",
+    "Please read and get back to me - https://en.wikipedia.org/wiki/Confirmation_bias",
 ]
 
 PRESENCE_OPTIONS = [

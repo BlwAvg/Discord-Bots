@@ -81,8 +81,8 @@ AI_SYSTEM_PROMPT = (
 #    "What to do right now" for this specific completion. Easy to tweak without changing personality.
 AI_TASK_INSTRUCTION = (
     "Fact-check the latest message in a playful way. "
-    "If it reads like an opinion/joke, say that. "
     "If it's a claim, point out what would need evidence or what could be wrong."
+    "Do not explicitly state Counterpoint or Opinion/Joke. Let that be implied. Communicate as human would in a conversation."
 )
 
 # 3) AI_CONTEXT_TEMPLATE:

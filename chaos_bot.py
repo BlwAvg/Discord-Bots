@@ -6,7 +6,12 @@ Discord "random reply" bot with:
 - Optional ChatGPT "fact check" reply
 
 Install:
+  sudo apt install python3-dev pip python3-venv
+  python3 -m venv .venv
+  source .venv/bin/activate
   pip install -U discord.py openai
+  python3 ./chaos_bot.py
+  deactivate
 
 Discord Developer Portal:
 - Enable "Message Content Intent" for your bot

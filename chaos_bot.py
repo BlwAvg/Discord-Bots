@@ -62,17 +62,42 @@ OPENAI_MODEL = "gpt-4o-mini"
 # When the trigger hits, choose AI vs canned:
 AI_RESPONSE_CHANCE = 0.60  # 0.0 = never AI, 1.0 = always AI (if ENABLE_AI_FACT_CHECK True)
 
-# AI style / tone
+# Conversation context size (last N messages BEFORE the triggering message)
+CONTEXT_MESSAGE_COUNT = 10
+
+# -----------------------------
+# PROMPT STRUCTURE (3 LAYERS)
+# -----------------------------
+# 1) AI_SYSTEM_PROMPT:
+#    "Who the assistant is" + global behavior rules. This stays mostly constant across calls.
 AI_SYSTEM_PROMPT = (
     "You are a witty, slightly sarcastic fact-checking assistant for a Discord server. "
     "Keep replies short (1-3 sentences), playful, and avoid harassment. "
-    "If what was said makes no sense just spout utterly ridiculous nonsense"
-    "If someone is making a point, research the opposing side and post something that counters that point"
+    "If what was said makes no sense just spout utterly ridiculous nonsense. "
+    "If someone is making a point, argue the opposing side and post something that counters that point. "
+)
+
+# 2) AI_TASK_INSTRUCTION:
+#    "What to do right now" for this specific completion. Easy to tweak without changing personality.
+AI_TASK_INSTRUCTION = (
+    "Fact-check the latest message in a playful way. "
+    "If it reads like an opinion/joke, say that. "
+    "If it's a claim, point out what would need evidence or what could be wrong."
+)
+
+# 3) AI_CONTEXT_TEMPLATE:
+#    "How inputs are formatted" (chat history + latest message). Pure formatting; no style rules here.
+AI_CONTEXT_TEMPLATE = (
+    "Recent conversation (most recent last):\n"
+    "{context}\n\n"
+    "Latest message to respond to:\n"
+    "{author}: {latest}\n"
 )
 
 # Safety / limits
 IGNORE_BOTS = True
 MAX_MESSAGE_CHARS_TO_FACTCHECK = 500  # skip AI if message is too long
+MAX_CONTEXT_CHARS = 2500              # truncate context to control token/cost
 COOLDOWN_SECONDS_AFTER_REPLY = 0.0    # optional cooldown after the bot replies (0 = none)
 
 # =========================
@@ -108,15 +133,52 @@ def get_or_init_state(channel_id: int):
     return channel_state[channel_id]
 
 
-async def ai_fact_check(message_text: str) -> str:
+def has_openai_key() -> bool:
+    return bool(OPENAI_API_KEY) and OPENAI_API_KEY != "PUT_YOUR_OPENAI_API_KEY_HERE"
+
+
+def _truncate_keep_end(text: str, max_chars: int) -> str:
+    """Keep only the last max_chars characters to control token usage/cost."""
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
+
+
+async def ai_fact_check(trigger_message: discord.Message) -> str:
     """
-    Uses OpenAI to produce a short 'fact-check' style reply.
+    Uses OpenAI to produce a short 'fact-check' style reply,
+    using the last CONTEXT_MESSAGE_COUNT messages as context.
     """
+    # Build context from the last N messages before the triggering message
+    lines = []
+    async for msg in trigger_message.channel.history(limit=CONTEXT_MESSAGE_COUNT, before=trigger_message):
+        if IGNORE_BOTS and msg.author.bot:
+            continue
+
+        content = (msg.content or "").strip()
+        if not content:
+            continue
+
+        lines.append(f"{msg.author.display_name}: {content}")
+
+    lines.reverse()  # oldest -> newest
+    context_text = _truncate_keep_end("\n".join(lines), MAX_CONTEXT_CHARS)
+
+    # Fill your context template dynamically
+    user_prompt = AI_CONTEXT_TEMPLATE.format(
+        context=context_text if context_text else "(no prior messages)",
+        author=trigger_message.author.display_name,
+        latest=(trigger_message.content or "").strip(),
+    )
+
+    # Combine task instruction + formatted context into the user message
+    full_user_message = f"{AI_TASK_INSTRUCTION}\n\n{user_prompt}"
+
     resp = await openai_client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[
             {"role": "system", "content": AI_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Fact-check this message (playful): {message_text}"},
+            {"role": "user", "content": full_user_message},
         ],
     )
     return resp.choices[0].message.content.strip()
@@ -140,6 +202,7 @@ async def on_ready():
 
     print(f"Trigger range: {MIN_MESSAGES}..{MAX_MESSAGES}")
 
+
 @discord_client.event
 async def on_message(message: discord.Message):
     # Ignore ourselves
@@ -157,27 +220,25 @@ async def on_message(message: discord.Message):
     state = get_or_init_state(message.channel.id)
     state["count"] += 1
 
-    # Debug:
-    # print(f"[{message.channel.id}] {state['count']}/{state['target']}")
-
     if state["count"] < state["target"]:
         return
 
     # Trigger hit — decide reply type
     reply_text = None
+    triggering_text = (message.content or "").strip()
 
     use_ai = (
         ENABLE_AI_FACT_CHECK
-        and OPENAI_API_KEY
-        and OPENAI_API_KEY != "PUT_YOUR_OPENAI_API_KEY_HERE"
+        and has_openai_key()
         and random.random() < AI_RESPONSE_CHANCE
-        and message.content
-        and len(message.content) <= MAX_MESSAGE_CHARS_TO_FACTCHECK
+        and triggering_text
+        and len(triggering_text) <= MAX_MESSAGE_CHARS_TO_FACTCHECK
     )
 
     if use_ai:
         try:
-            reply_text = await ai_fact_check(message.content)
+            # NOTE: pass the Message object so we can fetch the last N messages for context
+            reply_text = await ai_fact_check(message)
         except Exception as e:
             # Fallback if OpenAI fails
             reply_text = random.choice(CANNED_RESPONSES)

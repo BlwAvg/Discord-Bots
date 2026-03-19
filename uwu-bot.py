@@ -10,6 +10,7 @@
 import os
 import random
 import asyncio
+import logging
 from discord.ext import commands, tasks
 import discord
 
@@ -17,8 +18,8 @@ import discord
 #sudo apt install libffi-dev libnacl-dev python3-dev pip python3-venv ffmpeg
 #python3 -m venv .venv
 #source .venv/bin/activate
-# python3 -m pip install -U discord.py[voice] --- A bug for voice in v2.5.2 use repo below
-#pip install --upgrade git+https://github.com/Rapptz/discord.py.git@master
+# python3 -m pip install -U discord.py[voice] pynacl davey --- A bug for voice in v2.5.2 use repo below
+# pip install --upgrade git+https://github.com/Rapptz/discord.py.git@master 
 #deactivate
 
 # Bot setup --- Hard-coded settings ---
@@ -32,11 +33,72 @@ intents.voice_states = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix=prefix, intents=intents)
+logger = logging.getLogger("uwu_bot")
+
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+async def ensure_voice(channel: discord.VoiceChannel) -> discord.VoiceClient | None:
+    """Return a connected voice client for channel.guild, reconnecting/moving if needed."""
+    guild = channel.guild
+    existing_vc = discord.utils.get(bot.voice_clients, guild=guild)
+    vc = existing_vc if isinstance(existing_vc, discord.VoiceClient) else None
+
+    try:
+        if vc and vc.is_connected():
+            if vc.channel and vc.channel.id != channel.id:
+                logger.info(
+                    "Moving in guild '%s' from '%s' to '%s'",
+                    guild.name,
+                    vc.channel.name,
+                    channel.name,
+                )
+                await vc.move_to(channel)
+            return vc
+
+        if vc and not vc.is_connected():
+            logger.warning(
+                "Stale voice client detected in guild '%s'; reconnecting",
+                guild.name,
+            )
+            try:
+                await vc.disconnect(force=True)
+            except Exception:
+                logger.exception(
+                    "Error while cleaning stale voice client in guild '%s'",
+                    guild.name,
+                )
+
+        logger.info("Connecting to '%s' in guild '%s'", channel.name, guild.name)
+        vc = await channel.connect(reconnect=True, self_deaf=True)
+
+        if not vc or not vc.is_connected():
+            logger.error(
+                "Voice connect returned disconnected client for guild '%s'",
+                guild.name,
+            )
+            return None
+
+        return vc
+    except Exception:
+        logger.exception(
+            "Failed to establish voice connection for guild '%s' channel '%s'",
+            guild.name,
+            channel.name,
+        )
+        return None
 
 @bot.event
 async def on_ready():
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="UwU"))
-    print(f'Logged in as {bot.user} (ID: {bot.user.id})')
+    if bot.user is not None:
+        print(f'Logged in as {bot.user} (ID: {bot.user.id})')
+    else:
+        print('Logged in, but bot user is unexpectedly None')
     print('------')
     if not join_and_uwu.is_running():
         join_and_uwu.start()
@@ -47,42 +109,95 @@ async def join_and_uwu():
     Every 30 minutes, picks a random voice channel with active users,
     joins it, plays a random MP3 from your designated folder, then disconnects.
     """
-    # Collect voice channels that have at least one member besides the bot
-    voice_channels = []
-    for guild in bot.guilds:
-        for channel in guild.voice_channels:
-            perms = channel.permissions_for(guild.me)
-            if perms.connect and perms.speak and len(channel.members) > 0:
-                voice_channels.append(channel)
-
-    if not voice_channels:
-        return  # no active channels available
-
-    channel = random.choice(voice_channels) # Choose random voice channel
+    vc: discord.VoiceClient | None = None
     try:
-        vc = await channel.connect()
-    except discord.ClientException:
-        vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
-    except Exception as e:
-        print(f"Failed to connect: {e}")
-        return
+        # Collect channels with at least one non-bot member.
+        voice_channels = []
+        for guild in bot.guilds:
+            me = guild.me
+            if me is None:
+                continue
+            for channel in guild.voice_channels:
+                perms = channel.permissions_for(me)
+                has_human = any(not member.bot for member in channel.members)
+                if perms.connect and perms.speak and has_human:
+                    voice_channels.append(channel)
 
-    # Choose a random MP3 file from the folder
-    if not os.path.isdir(uwu_folder):
-        print(f"UwU folder not found at '{uwu_folder}'")
-    else:
+        if not voice_channels:
+            logger.info("No eligible voice channels with non-bot users found")
+            return
+
+        channel = random.choice(voice_channels)
+        guild = channel.guild
+        logger.info("Selected channel '%s' in guild '%s'", channel.name, guild.name)
+
+        vc = await ensure_voice(channel)
+        if vc is None or not vc.is_connected():
+            logger.error(
+                "Skipping playback because voice is unavailable in guild '%s'",
+                guild.name,
+            )
+            return
+
+        if not os.path.isdir(uwu_folder):
+            logger.error("UwU folder not found at '%s'", uwu_folder)
+            return
+
         files = [f for f in os.listdir(uwu_folder) if f.lower().endswith('.mp3')]
         if not files:
-            print(f"No MP3 files in folder '{uwu_folder}'")
-        else:
-            selected = random.choice(files)
-            filepath = os.path.join(uwu_folder, selected)
-            audio = discord.FFmpegPCMAudio(filepath)
-            vc.play(audio)
-            while vc.is_playing():
-                await asyncio.sleep(1)
+            logger.warning("No MP3 files in folder '%s'", uwu_folder)
+            return
 
-    await vc.disconnect()
+        selected = random.choice(files)
+        filepath = os.path.join(uwu_folder, selected)
+        audio = discord.FFmpegPCMAudio(filepath)
+
+        if not vc.is_connected():
+            logger.error(
+                "Voice client disconnected before playback in guild '%s'",
+                guild.name,
+            )
+            return
+
+        if vc.is_playing():
+            vc.stop()
+
+        try:
+            vc.play(audio)
+            logger.info(
+                "Playback started in guild '%s' channel '%s': %s",
+                guild.name,
+                channel.name,
+                selected,
+            )
+        except Exception:
+            logger.exception(
+                "Playback error in guild '%s' channel '%s'",
+                guild.name,
+                channel.name,
+            )
+            return
+
+        while vc.is_connected() and vc.is_playing():
+            await asyncio.sleep(1)
+
+    except Exception:
+        # Keep loop alive if one run fails unexpectedly.
+        logger.exception("Unexpected error in join_and_uwu loop run")
+    finally:
+        if vc and vc.is_connected():
+            try:
+                await vc.disconnect()
+                logger.info("Disconnected from guild '%s'", vc.guild.name)
+            except Exception:
+                logger.exception("Failed to disconnect cleanly")
+
+
+@join_and_uwu.error
+async def join_and_uwu_error(*args):
+    # Final safety net for exceptions escaping the loop body.
+    error = args[-1] if args else Exception("Unknown join_and_uwu task error")
+    logger.exception("join_and_uwu task error: %s", error)
 
 # Manual trigger:
 @bot.command(name='run')

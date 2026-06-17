@@ -48,9 +48,9 @@ CANNED_RESPONSES = [
     "You are being a douche.",
     "citation needed 🧾",
     "source: trust me bro",
-    "this claim is under investigation 🔎",
-    "fact check: vibes are questionable",
-    "Please read and get back to me - https://en.wikipedia.org/wiki/Confirmation_bias",
+    "I am an AI, and even I think that is dumb.",
+    "This is why your parents dont love you.",
+    "Please read: https://en.wikipedia.org/wiki/Confirmation_bias",
 ]
 
 PRESENCE_OPTIONS = [
@@ -63,7 +63,7 @@ PRESENCE_OPTIONS = [
 
 # --- AI behavior ---
 ENABLE_AI_FACT_CHECK = True
-OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL = "gpt-5.4-mini"
 
 # When the trigger hits, choose AI vs canned:
 AI_RESPONSE_CHANCE = 0.60  # 0.0 = never AI, 1.0 = always AI (if ENABLE_AI_FACT_CHECK True)
@@ -78,16 +78,16 @@ CONTEXT_MESSAGE_COUNT = 10
 #    "Who the assistant is" + global behavior rules. This stays mostly constant across calls.
 AI_SYSTEM_PROMPT = (
     "You are a witty, slightly sarcastic fact-checking assistant for a Discord server. "
-    "Keep replies short (1-3 sentences), playful, and avoid harassment. "
-    "If what was said makes no sense just spout utterly ridiculous nonsense. "
+    "Keep replies short (1-3 sentences), spiteful, cutting. "
+    "If what was said makes no sense just spout utterly ridiculous nonsense. Use insults from Monty Python. "
     "If someone is making a point, argue the opposing side and post something that counters that point. "
 )
 
 # 2) AI_TASK_INSTRUCTION:
 #    "What to do right now" for this specific completion. Easy to tweak without changing personality.
 AI_TASK_INSTRUCTION = (
-    "Fact-check the latest message in a playful way. "
-    "If it's a claim, point out what would need evidence or what could be wrong."
+    "Fact-check the latest message in a sarcastic and cutting way. "
+    "If it's a claim, point out that the claim is dumb. "
     "Do not explicitly state Counterpoint or Opinion/Joke. Let that be implied. Communicate as human would in a conversation."
 )
 
@@ -223,10 +223,17 @@ async def on_message(message: discord.Message):
     if not is_allowed_channel(message.channel.id):
         return
 
+    # Check if the bot is called out by name or @mention
+    bot_mentioned = (
+        discord_client.user in message.mentions
+        or (discord_client.user.display_name.lower() in message.content.lower())
+        or (discord_client.user.name.lower() in message.content.lower())
+    )
+
     state = get_or_init_state(message.channel.id)
     state["count"] += 1
 
-    if state["count"] < state["target"]:
+    if state["count"] < state["target"] and not bot_mentioned:
         return
 
     # Trigger hit — decide reply type
@@ -258,9 +265,10 @@ async def on_message(message: discord.Message):
     except Exception as e:
         print(f"Discord reply error: {e!r}")
 
-    # Reset counter + choose new random target
-    state["count"] = 0
-    state["target"] = random.randint(MIN_MESSAGES, MAX_MESSAGES)
+    # Reset counter + choose new random target (only for random triggers, not name mentions)
+    if not bot_mentioned or state["count"] >= state["target"]:
+        state["count"] = 0
+        state["target"] = random.randint(MIN_MESSAGES, MAX_MESSAGES)
 
     # Optional cooldown
     if COOLDOWN_SECONDS_AFTER_REPLY > 0:

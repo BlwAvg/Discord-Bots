@@ -451,7 +451,7 @@ async def inspect_command(ctx: commands.Context[Any], target: Optional[discord.M
         )
         return
 
-    if random.randint(1, 10) != 1:
+    if random.uniform(0, 100) >= bot.config.inspect_success_percent:
         await bot.send_character_message(
             ctx.channel,
             "inspect_fail",
@@ -490,6 +490,23 @@ async def reshuffle_command(ctx: commands.Context[Any]) -> None:
         return
 
     await bot.run_daily_shuffle("manual", ctx.channel, ctx.guild)
+
+
+@bot.command(name="clear", hidden=True)
+async def clear_command(ctx: commands.Context[Any]) -> None:
+    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+        logger.warning("Clear command ignored because context was not a guild member context.")
+        return
+
+    if not ctx.author.guild_permissions.administrator:
+        logger.warning("Clear command denied for non-admin user %s", ctx.author.id)
+        await ctx.send("Only server admins can use this command.")
+        return
+
+    bot.state["inspect_usage_by_user_date"] = {}
+    save_state(bot.state)
+    logger.info("Inspect usage cooldown state cleared by admin %s", ctx.author.id)
+    await ctx.send("Inspect cooldown usage has been cleared. Everyone can try !inspect again.")
 
 
 @bot.event

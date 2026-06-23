@@ -11,6 +11,7 @@ A Python Discord bot that runs a daily BTGO role shuffle and supports manual ins
 - `!reshuffle` can be used by allowed user IDs and current BTGO holders.
 - `!help` command explains available commands.
 - Response pools are configurable in `.env`.
+- `!inspect` success chance is configurable via `INSPECT_SUCCESS_PERCENT`.
 - Optional OpenAI response generation for in-character replies.
 - Configurable AI response percentage when AI mode is enabled.
 - Runtime logs are written under `data/`.

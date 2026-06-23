@@ -64,6 +64,7 @@ class Config:
     timezone: str
     daily_min_winners: int
     daily_max_winners: int
+    inspect_success_percent: int
     reshuffle_allowed_user_ids: List[int]
     enable_ai_responses: bool
     ai_response_percent: int
@@ -81,6 +82,7 @@ def load_config() -> Config:
     timezone = os.getenv("TIMEZONE", "UTC").strip() or "UTC"
     daily_min = max(1, _to_int(os.getenv("DAILY_MIN_WINNERS"), 2))
     daily_max = max(1, _to_int(os.getenv("DAILY_MAX_WINNERS"), 5))
+    inspect_success_percent = _to_percent(os.getenv("INSPECT_SUCCESS_PERCENT"), 10)
     if daily_min > daily_max:
         daily_min, daily_max = daily_max, daily_min
 
@@ -98,6 +100,7 @@ def load_config() -> Config:
         timezone=timezone,
         daily_min_winners=daily_min,
         daily_max_winners=daily_max,
+        inspect_success_percent=inspect_success_percent,
         reshuffle_allowed_user_ids=reshuffle_ids,
         enable_ai_responses=_to_bool(os.getenv("ENABLE_AI_RESPONSES"), False),
         ai_response_percent=_to_percent(os.getenv("AI_RESPONSE_PERCENT"), 100),

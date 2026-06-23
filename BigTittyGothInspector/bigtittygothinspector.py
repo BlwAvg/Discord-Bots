@@ -302,6 +302,15 @@ class BtgoBot(commands.Bot):
         logger.info("User %s denied reshuffle access.", member.id)
         return False
 
+    def user_has_btgo_role(self, member: discord.Member) -> bool:
+        """Check if a user has the BTGO role."""
+        role = discord.utils.get(member.roles, name=self.config.btgo_role_identifier)
+        if role is not None:
+            return True
+        if self.config.btgo_role_identifier.isdigit():
+            return any(role.id == int(self.config.btgo_role_identifier) for role in member.roles)
+        return False
+
     async def daily_shuffle_loop(self) -> None:
         await self.wait_until_ready()
 
@@ -338,6 +347,54 @@ async def on_ready() -> None:
         )
     )
     logger.info("Logged in as %s", bot.user)
+
+
+@bot.event
+async def on_message(message: discord.Message) -> None:
+    """Handle direct messages and mentions."""
+    # Ignore messages from bots
+    if message.author.bot:
+        return
+
+    # Check if bot is mentioned in the message
+    if bot.user and bot.user.mentioned_in(message):
+        # Determine if author has BTGO role
+        has_btgo_role = False
+        if isinstance(message.author, discord.Member):
+            has_btgo_role = bot.user_has_btgo_role(message.author)
+
+        # Select response pool based on role and context
+        if has_btgo_role:
+            response_pool = bot.config.responses.mention_uwu
+        else:
+            response_pool = bot.config.responses.mention_mean
+
+        logger.info(
+            "Mention received from %s (BTGO: %s) in %s",
+            message.author.id,
+            has_btgo_role,
+            "DM" if isinstance(message.channel, discord.DMChannel) else "guild",
+        )
+        await bot.send_character_message(message.channel, "mention", response_pool)
+
+    # Check if this is a DM (direct message)
+    elif isinstance(message.channel, discord.DMChannel):
+        # Determine if author has BTGO role (requires member object, DMs don't have it)
+        has_btgo_role = False
+        if isinstance(message.author, discord.Member):
+            has_btgo_role = bot.user_has_btgo_role(message.author)
+
+        # Select response pool based on role
+        if has_btgo_role:
+            response_pool = bot.config.responses.dm_uwu
+        else:
+            response_pool = bot.config.responses.dm_mean
+
+        logger.info("DM received from %s (BTGO: %s)", message.author.id, has_btgo_role)
+        await bot.send_character_message(message.channel, "dm", response_pool)
+
+    # Process commands normally
+    await bot.process_commands(message)
 
 
 @bot.command(name="help")
@@ -384,6 +441,15 @@ async def inspect_command(ctx: commands.Context[Any], target: Optional[discord.M
     target_member = target or ctx.author
     used[user_id] = today
     save_state(bot.state)
+
+    if isinstance(target_member, discord.Member) and bot.user_has_btgo_role(target_member):
+        await bot.send_character_message(
+            ctx.channel,
+            "inspect_already_btgo",
+            bot.config.responses.inspect_already_btgo,
+            {"target": target_member.mention},
+        )
+        return
 
     if random.randint(1, 10) != 1:
         await bot.send_character_message(

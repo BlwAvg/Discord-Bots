@@ -42,12 +42,17 @@ class Responses:
     help_intro: List[str]
     inspect_win: List[str]
     inspect_lose: List[str]
+    inspect_already_btgo: List[str]
     inspect_cooldown: List[str]
     reshuffle_denied: List[str]
     reshuffle_done: List[str]
     time: List[str]
     no_online_users: List[str]
     generic_error: List[str]
+    mention_mean: List[str]
+    mention_uwu: List[str]
+    dm_mean: List[str]
+    dm_uwu: List[str]
 
 
 @dataclass(frozen=True)
@@ -127,6 +132,14 @@ def load_config() -> Config:
                     "The vibes were off. {target} gets nothing today.",
                 ],
             ),
+            inspect_already_btgo=_to_responses(
+                os.getenv("INSPECT_ALREADY_BTGO_RESPONSES"),
+                [
+                    "Idiot, {target} is already in the BTGO group. Pick someone else.",
+                    "Try thinking before you inspect, fool. {target} is already BTGO.",
+                    "What are you doing, dumbass? {target} is already one of us.",
+                ],
+            ),
             inspect_cooldown=_to_responses(
                 os.getenv("INSPECT_COOLDOWN_RESPONSES"),
                 [
@@ -173,6 +186,42 @@ def load_config() -> Config:
                     "The inspector tripped over a chain. Try again in a moment.",
                     "Something broke, simp. Retry in a second.",
                     "Technical chaos detected. Try again shortly.",
+                ],
+            ),
+            mention_mean=_to_responses(
+                os.getenv("MENTION_MEAN_RESPONSES"),
+                [
+                    "What do you want, simp? State your purpose.",
+                    "You dare mention the inspector? Speak, wretch.",
+                    "Hmm, what pathetic creature seeks my attention?",
+                    "Interesting. A nobody trying to get my notice.",
+                ],
+            ),
+            mention_uwu=_to_responses(
+                os.getenv("MENTION_UWU_RESPONSES"),
+                [
+                    "OwO hi there~ *adjusts chain* what can i do for you, huh?",
+                    "Oh hey bb~ you called for me? I'm all yours~ 💋",
+                    "Hiiii~ *teases* what's up, cutie?",
+                    "Yesss~ you need something from me? I'm here for you~ 🖤",
+                ],
+            ),
+            dm_mean=_to_responses(
+                os.getenv("DM_MEAN_RESPONSES"),
+                [
+                    "Sliding into my DMs? Bold move for a simp like you. What do you want?",
+                    "How pathetic. You think private messages change your status? Speak.",
+                    "A DM from nobody? How desperate. State your business.",
+                    "Your audacity is laughable. But fine, what do you need?",
+                ],
+            ),
+            dm_uwu=_to_responses(
+                os.getenv("DM_UWU_RESPONSES"),
+                [
+                    "Ohhh, a private message just for me? You're so sweet~ 😘",
+                    "Hey cutie~ I'm so happy you reached out~ What's on your mind? 💕",
+                    "UwU you slid into my DMs? I'm flattered, babe~ Tell me everything~ 🖤",
+                    "Hiiii~ just the two of us now? I like that energy~ What do you wanna say?",
                 ],
             ),
         ),

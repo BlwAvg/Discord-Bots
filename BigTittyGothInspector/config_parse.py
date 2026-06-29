@@ -138,7 +138,7 @@ def load_config() -> Config:
         enable_ai_responses=_to_bool(os.getenv("ENABLE_AI_RESPONSES"), False),
         ai_response_percent=_to_percent(os.getenv("AI_RESPONSE_PERCENT"), 100),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini",
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini").strip() or "gpt-5-mini",
         openai_timeout_seconds=max(1.0, _to_float(os.getenv("OPENAI_TIMEOUT_SECONDS"), 12.0)),
         ai_system_prompt=os.getenv(
             "AI_SYSTEM_PROMPT",

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from config_parse import Config, load_config
 
@@ -39,6 +39,7 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("btgo")
+FALLBACK_OPENAI_MODEL = "gpt-5-mini"
 
 
 @contextlib.asynccontextmanager
@@ -98,6 +99,7 @@ class BtgoBot(commands.Bot):
         self.config = config
         self.state = load_state()
         self.timezone = ZoneInfo(config.timezone)
+        self.openai_model = config.openai_model
         self.openai_client = (
             AsyncOpenAI(
                 api_key=config.openai_api_key,
@@ -108,6 +110,32 @@ class BtgoBot(commands.Bot):
         )
         self.daily_task: Optional[asyncio.Task[None]] = None
         self.ibtc_taunt_task: Optional[asyncio.Task[None]] = None
+
+    @staticmethod
+    def is_model_not_found_error(error: Exception) -> bool:
+        if isinstance(error, BadRequestError) and getattr(error, "code", None) == "model_not_found":
+            return True
+        message = str(error).lower()
+        return "model_not_found" in message or ("model" in message and "does not exist" in message)
+
+    async def create_ai_response(self, context_name: str, prompt_input: list[dict[str, str]]) -> Any:
+        if self.openai_client is None:
+            raise RuntimeError("OpenAI client is unavailable")
+
+        try:
+            return await self.openai_client.responses.create(model=self.openai_model, input=prompt_input)
+        except Exception as error:
+            if self.is_model_not_found_error(error) and self.openai_model != FALLBACK_OPENAI_MODEL:
+                previous_model = self.openai_model
+                self.openai_model = FALLBACK_OPENAI_MODEL
+                logger.warning(
+                    "Configured model '%s' was not found for context=%s; retrying with fallback model '%s'.",
+                    previous_model,
+                    context_name,
+                    self.openai_model,
+                )
+                return await self.openai_client.responses.create(model=self.openai_model, input=prompt_input)
+            raise
 
     async def setup_hook(self) -> None:
         logger.info("Starting daily shuffle background task.")
@@ -179,9 +207,9 @@ class BtgoBot(commands.Bot):
             if self.config.log_ai_payload:
                 logger.info("AI request context=%s prompt=%s", context_name, " | ".join(prompt))
 
-            completion = await openai_client.responses.create(
-                model=self.config.openai_model,
-                input=[
+            completion = await self.create_ai_response(
+                context_name,
+                [
                     {"role": "system", "content": self.config.ai_system_prompt},
                     {"role": "user", "content": "\n".join(prompt)},
                 ],
@@ -192,7 +220,7 @@ class BtgoBot(commands.Bot):
                 logger.info(
                     "AI response success context=%s model=%s elapsed_ms=%.0f response_chars=%s",
                     context_name,
-                    self.config.openai_model,
+                    self.openai_model,
                     elapsed_ms,
                     len(output),
                 )
@@ -201,7 +229,7 @@ class BtgoBot(commands.Bot):
             logger.warning(
                 "AI response empty context=%s model=%s elapsed_ms=%.0f; using fallback.",
                 context_name,
-                self.config.openai_model,
+                self.openai_model,
                 elapsed_ms,
             )
             return fallback
@@ -210,7 +238,7 @@ class BtgoBot(commands.Bot):
             logger.exception(
                 "AI response failed context=%s model=%s elapsed_ms=%.0f; using fallback.",
                 context_name,
-                self.config.openai_model,
+                self.openai_model,
                 elapsed_ms,
             )
             return fallback
@@ -474,11 +502,11 @@ class BtgoBot(commands.Bot):
                 "Mention AI request user_id=%s btgo=%s model=%s",
                 message.author.id,
                 has_btgo_role,
-                self.config.openai_model,
+                self.openai_model,
             )
-            completion = await self.openai_client.responses.create(
-                model=self.config.openai_model,
-                input=[
+            completion = await self.create_ai_response(
+                "mention",
+                [
                     {"role": "system", "content": self.config.ai_system_prompt},
                     {
                         "role": "user",
@@ -581,7 +609,7 @@ async def on_ready() -> None:
         "AI config enabled=%s api_key_present=%s model=%s timeout_seconds=%.1f ai_percent=%s",
         bot.config.enable_ai_responses,
         bool(bot.config.openai_api_key),
-        bot.config.openai_model,
+        bot.openai_model,
         bot.config.openai_timeout_seconds,
         bot.config.ai_response_percent,
     )

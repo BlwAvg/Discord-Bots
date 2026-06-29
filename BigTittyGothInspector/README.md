@@ -9,6 +9,7 @@ A Python Discord bot that runs a daily BTGO role shuffle and supports manual ins
 - `!inspect [@user]` gives a daily chance to assign BTGO role once per requester per day.
 - `!inspect` failures now assign the configured IBTC role to the user who ran the command.
 - Configurable `ALWAYS_PASS_USER_IDS` and `NEVER_PASS_USER_IDS` affect both `!inspect` and daily BTGO shuffle outcomes.
+- IBTC role holders are also cleared during the daily reset alongside BTGO holders.
 - `!time` shows when the next daily shuffle happens.
 - `!reshuffle` can be used by allowed user IDs and current BTGO holders.
 - `!help` command explains available commands.
@@ -17,7 +18,7 @@ A Python Discord bot that runs a daily BTGO role shuffle and supports manual ins
 - Optional OpenAI response generation for in-character replies.
 - Configurable AI response percentage when AI mode is enabled.
 - Mentions use AI-generated role-aware tone when AI mode is enabled (favorable for BTGO holders, disdain for others).
-- Periodic IBTC taunts can mention the role at configurable intervals.
+- Periodic IBTC taunts select one random IBTC member to mention at configurable intervals.
 - Runtime logs are written under `data/`.
 
 ## Setup
@@ -38,6 +39,8 @@ cp .env.example .env
 ```bash
 ./install.sh
 ```
+
+If you are on Windows, run the scripts from Git Bash or WSL.
 
 3. In the Discord developer portal, enable:
 
@@ -72,6 +75,7 @@ Manual entrypoint: `python -u bigtittygothinspector.py`
 - Mention replies try AI first and include the user's message content for context.
 - `IBTC_TAUNT_INTERVAL_MINUTES` controls approximate taunt cadence with randomized spacing.
 - `IBTC_TAUNT_CHANNEL_ID` is optional; if omitted, bot uses system channel or first writable text channel.
+- IBTC taunts pick one random non-bot member from the IBTC role each time.
 - The bot only selects non-bot users whose status is not `offline`.
 - Users in `NEVER_PASS_USER_IDS` are excluded from daily BTGO winners and always fail `!inspect`.
 - Users in `ALWAYS_PASS_USER_IDS` are always added to daily BTGO winners (when online) and always pass `!inspect`.

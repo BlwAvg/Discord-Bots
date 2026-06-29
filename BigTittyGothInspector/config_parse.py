@@ -53,6 +53,7 @@ class Responses:
     mention_uwu: List[str]
     dm_mean: List[str]
     dm_uwu: List[str]
+    ibtc_taunt: List[str]
 
 
 @dataclass(frozen=True)
@@ -60,12 +61,17 @@ class Config:
     token: str
     guild_id: int
     btgo_role_identifier: str
+    ibtc_role_identifier: str
+    ibtc_taunt_channel_id: int
+    ibtc_taunt_interval_minutes: int
     command_prefix: str
     timezone: str
     daily_min_winners: int
     daily_max_winners: int
     inspect_success_percent: int
     reshuffle_allowed_user_ids: List[int]
+    always_pass_user_ids: List[int]
+    never_pass_user_ids: List[int]
     enable_ai_responses: bool
     ai_response_percent: int
     openai_api_key: str
@@ -78,6 +84,9 @@ def load_config() -> Config:
     token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
     guild_id = _to_int(os.getenv("GUILD_ID"), 0)
     btgo_role_identifier = os.getenv("BTGO_ROLE_ID", "").strip()
+    ibtc_role_identifier = os.getenv("IBTC_ROLE_ID", "").strip()
+    ibtc_taunt_channel_id = _to_int(os.getenv("IBTC_TAUNT_CHANNEL_ID"), 0)
+    ibtc_taunt_interval_minutes = max(1, _to_int(os.getenv("IBTC_TAUNT_INTERVAL_MINUTES"), 60))
     command_prefix = os.getenv("COMMAND_PREFIX", "!").strip() or "!"
     timezone = os.getenv("TIMEZONE", "UTC").strip() or "UTC"
     daily_min = max(1, _to_int(os.getenv("DAILY_MIN_WINNERS"), 2))
@@ -91,17 +100,32 @@ def load_config() -> Config:
         for user_id in _to_list(os.getenv("RESHUFFLE_USER_IDS"))
         if user_id.isdigit()
     ]
+    always_pass_ids = [
+        int(user_id)
+        for user_id in _to_list(os.getenv("ALWAYS_PASS_USER_IDS"))
+        if user_id.isdigit()
+    ]
+    never_pass_ids = [
+        int(user_id)
+        for user_id in _to_list(os.getenv("NEVER_PASS_USER_IDS"))
+        if user_id.isdigit()
+    ]
 
     config = Config(
         token=token,
         guild_id=guild_id,
         btgo_role_identifier=btgo_role_identifier,
+        ibtc_role_identifier=ibtc_role_identifier,
+        ibtc_taunt_channel_id=ibtc_taunt_channel_id,
+        ibtc_taunt_interval_minutes=ibtc_taunt_interval_minutes,
         command_prefix=command_prefix,
         timezone=timezone,
         daily_min_winners=daily_min,
         daily_max_winners=daily_max,
         inspect_success_percent=inspect_success_percent,
         reshuffle_allowed_user_ids=reshuffle_ids,
+        always_pass_user_ids=always_pass_ids,
+        never_pass_user_ids=never_pass_ids,
         enable_ai_responses=_to_bool(os.getenv("ENABLE_AI_RESPONSES"), False),
         ai_response_percent=_to_percent(os.getenv("AI_RESPONSE_PERCENT"), 100),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
@@ -227,6 +251,14 @@ def load_config() -> Config:
                     "Hiiii~ just the two of us now? I like that energy~ What do you wanna say?",
                 ],
             ),
+            ibtc_taunt=_to_responses(
+                os.getenv("IBTC_TAUNT_RESPONSES"),
+                [
+                    "{target} step forward from {role}. Your inspection score is still embarrassing.",
+                    "Attention {target}: another day, another L for your committee.",
+                    "{target} report in. We are auditing your bad decisions again.",
+                ],
+            ),
         ),
     )
 
@@ -237,6 +269,8 @@ def load_config() -> Config:
         missing.append("GUILD_ID")
     if not config.btgo_role_identifier:
         missing.append("BTGO_ROLE_ID")
+    if not config.ibtc_role_identifier:
+        missing.append("IBTC_ROLE_ID")
     if config.enable_ai_responses and not config.openai_api_key:
         missing.append("OPENAI_API_KEY")
 

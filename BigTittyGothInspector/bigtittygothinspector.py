@@ -87,16 +87,23 @@ class BtgoBot(commands.Bot):
             else None
         )
         self.daily_task: Optional[asyncio.Task[None]] = None
+        self.ibtc_taunt_task: Optional[asyncio.Task[None]] = None
 
     async def setup_hook(self) -> None:
         logger.info("Starting daily shuffle background task.")
         self.daily_task = asyncio.create_task(self.daily_shuffle_loop())
+        logger.info("Starting IBTC taunt background task.")
+        self.ibtc_taunt_task = asyncio.create_task(self.ibtc_taunt_loop())
 
     async def close(self) -> None:
         if self.daily_task:
             self.daily_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.daily_task
+        if self.ibtc_taunt_task:
+            self.ibtc_taunt_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.ibtc_taunt_task
         await super().close()
 
     def current_date_key(self) -> str:
@@ -173,16 +180,27 @@ class BtgoBot(commands.Bot):
         await guild.chunk(cache=True)
         return guild
 
-    def resolve_role(self, guild: discord.Guild) -> discord.Role:
-        identifier = self.config.btgo_role_identifier
+    def resolve_configured_role(self, guild: discord.Guild, identifier: str, label: str) -> discord.Role:
         role = None
         if identifier.isdigit():
             role = guild.get_role(int(identifier))
         if role is None:
             role = discord.utils.get(guild.roles, name=identifier)
         if role is None:
-            raise RuntimeError("Configured BTGO role was not found.")
+            raise RuntimeError(f"Configured {label} role was not found.")
         return role
+
+    def resolve_btgo_role(self, guild: discord.Guild) -> discord.Role:
+        return self.resolve_configured_role(guild, self.config.btgo_role_identifier, "BTGO")
+
+    def resolve_ibtc_role(self, guild: discord.Guild) -> discord.Role:
+        return self.resolve_configured_role(guild, self.config.ibtc_role_identifier, "IBTC")
+
+    def is_never_pass_user(self, user_id: int) -> bool:
+        return user_id in self.config.never_pass_user_ids
+
+    def is_always_pass_user(self, user_id: int) -> bool:
+        return user_id in self.config.always_pass_user_ids
 
     async def clear_btgo_roles(self, guild: discord.Guild, role: discord.Role) -> None:
         logger.info("Clearing BTGO role from %s current holders.", len(role.members))
@@ -190,6 +208,18 @@ class BtgoBot(commands.Bot):
             await member.remove_roles(role, reason="Daily BTGO reset")
         self.state["btgo_role_member_ids"] = []
         save_state(self.state)
+
+    async def clear_ibtc_roles(self, role: discord.Role) -> None:
+        logger.info("Clearing IBTC role from %s current holders.", len(role.members))
+        for member in list(role.members):
+            await member.remove_roles(role, reason="Daily IBTC reset")
+
+    async def assign_ibtc_role_to_member(self, guild: discord.Guild, member: discord.Member, reason: str) -> None:
+        role = self.resolve_ibtc_role(guild)
+        if role in member.roles:
+            return
+        await member.add_roles(role, reason=reason)
+        logger.info("Assigned IBTC role to %s for reason '%s'.", member.display_name, reason)
 
     async def get_online_humans(self, guild: discord.Guild) -> list[discord.Member]:
         members = []
@@ -207,6 +237,25 @@ class BtgoBot(commands.Bot):
         minimum = max(1, min(self.config.daily_min_winners, online_count))
         maximum = max(minimum, min(self.config.daily_max_winners, online_count))
         return random.randint(minimum, maximum)
+
+    def choose_daily_winners(self, online_members: list[discord.Member]) -> list[discord.Member]:
+        eligible = [member for member in online_members if not self.is_never_pass_user(member.id)]
+        if not eligible:
+            return []
+
+        always_pass_members = [member for member in eligible if self.is_always_pass_user(member.id)]
+        remaining_members = [member for member in eligible if member.id not in {m.id for m in always_pass_members}]
+
+        if not remaining_members:
+            return always_pass_members
+
+        random_count = self.get_daily_winner_count(len(remaining_members))
+        random_winners = random.sample(remaining_members, random_count)
+
+        winners_by_id: dict[int, discord.Member] = {member.id: member for member in always_pass_members}
+        for member in random_winners:
+            winners_by_id[member.id] = member
+        return list(winners_by_id.values())
 
     async def apply_btgo_to_members(
         self,
@@ -247,9 +296,11 @@ class BtgoBot(commands.Bot):
     ) -> list[discord.Member]:
         logger.info("Running BTGO shuffle. trigger=%s source_channel=%s", trigger, bool(source_channel))
         target_guild = guild or await self.fetch_target_guild()
-        role = self.resolve_role(target_guild)
+        role = self.resolve_btgo_role(target_guild)
+        ibtc_role = self.resolve_ibtc_role(target_guild)
 
         await self.clear_btgo_roles(target_guild, role)
+        await self.clear_ibtc_roles(ibtc_role)
 
         online_members = await self.get_online_humans(target_guild)
         if not online_members:
@@ -265,8 +316,19 @@ class BtgoBot(commands.Bot):
                 )
             return []
 
-        count = self.get_daily_winner_count(len(online_members))
-        winners = random.sample(online_members, count)
+        winners = self.choose_daily_winners(online_members)
+        if not winners:
+            self.state["last_daily_shuffle_date"] = self.current_date_key()
+            save_state(self.state)
+            logger.warning("No eligible members were available after always/never pass filters.")
+            if source_channel is not None:
+                await self.send_character_message(
+                    source_channel,
+                    "no_online_users",
+                    self.config.responses.no_online_users,
+                )
+            return []
+
         await self.apply_btgo_to_members(role, winners, f"BTGO shuffle ({trigger})")
 
         self.state["last_daily_shuffle_date"] = self.current_date_key()
@@ -333,6 +395,84 @@ class BtgoBot(commands.Bot):
             except Exception:
                 logger.exception("Scheduled shuffle failed.")
 
+    async def generate_mention_reply(self, message: discord.Message, has_btgo_role: bool) -> str:
+        if not self.openai_client:
+            response_pool = self.config.responses.mention_uwu if has_btgo_role else self.config.responses.mention_mean
+            return await self.build_character_response("mention", response_pool)
+
+        tone = "favorable and playful" if has_btgo_role else "dismissive and disdainful"
+        user_content = message.content.strip() or "(no text, mention only)"
+
+        try:
+            completion = await self.openai_client.responses.create(
+                model=self.config.openai_model,
+                input=[
+                    {"role": "system", "content": self.config.ai_system_prompt},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Reply as the bot to a Discord mention in one short message. "
+                            f"Tone must be {tone}. User message: {user_content}. "
+                            "No markdown. Keep it Discord-safe."
+                        ),
+                    },
+                ],
+            )
+            output = (completion.output_text or "").strip()
+            if output:
+                return output
+        except Exception:
+            logger.exception("AI mention reply failed; falling back to canned/templated response.")
+
+        fallback_pool = self.config.responses.mention_uwu if has_btgo_role else self.config.responses.mention_mean
+        return await self.build_character_response("mention", fallback_pool)
+
+    async def get_ibtc_taunt_channel(self, guild: discord.Guild) -> Optional[discord.abc.Messageable]:
+        if self.config.ibtc_taunt_channel_id:
+            configured_channel = guild.get_channel(self.config.ibtc_taunt_channel_id)
+            if configured_channel is not None:
+                return configured_channel
+
+        if guild.system_channel is not None:
+            return guild.system_channel
+
+        for channel in guild.text_channels:
+            if channel.permissions_for(guild.me).send_messages:
+                return channel
+        return None
+
+    async def ibtc_taunt_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            base_seconds = self.config.ibtc_taunt_interval_minutes * 60
+            sleep_seconds = random.uniform(base_seconds * 0.5, base_seconds * 1.5)
+            await asyncio.sleep(max(10, sleep_seconds))
+
+            try:
+                guild = await self.fetch_target_guild()
+                ibtc_role = self.resolve_ibtc_role(guild)
+                if not ibtc_role.members:
+                    continue
+
+                eligible_members = [member for member in ibtc_role.members if not member.bot]
+                if not eligible_members:
+                    continue
+                target_member = random.choice(eligible_members)
+
+                channel = await self.get_ibtc_taunt_channel(guild)
+                if channel is None:
+                    logger.warning("Could not find an IBTC taunt channel in guild %s.", guild.id)
+                    continue
+
+                await self.send_character_message(
+                    channel,
+                    "ibtc_taunt",
+                    self.config.responses.ibtc_taunt,
+                    {"role": ibtc_role.mention, "target": target_member.mention},
+                )
+            except Exception:
+                logger.exception("IBTC taunt loop iteration failed.")
+
 
 config = load_config()
 bot = BtgoBot(config)
@@ -363,19 +503,14 @@ async def on_message(message: discord.Message) -> None:
         if isinstance(message.author, discord.Member):
             has_btgo_role = bot.user_has_btgo_role(message.author)
 
-        # Select response pool based on role and context
-        if has_btgo_role:
-            response_pool = bot.config.responses.mention_uwu
-        else:
-            response_pool = bot.config.responses.mention_mean
-
         logger.info(
             "Mention received from %s (BTGO: %s) in %s",
             message.author.id,
             has_btgo_role,
             "DM" if isinstance(message.channel, discord.DMChannel) else "guild",
         )
-        await bot.send_character_message(message.channel, "mention", response_pool)
+        mention_reply = await bot.generate_mention_reply(message, has_btgo_role)
+        await message.channel.send(mention_reply)
 
     # Check if this is a DM (direct message)
     elif isinstance(message.channel, discord.DMChannel):
@@ -442,6 +577,32 @@ async def inspect_command(ctx: commands.Context[Any], target: Optional[discord.M
     used[user_id] = today
     save_state(bot.state)
 
+    if bot.is_never_pass_user(target_member.id):
+        if ctx.guild is not None and isinstance(ctx.author, discord.Member):
+            await bot.assign_ibtc_role_to_member(ctx.guild, ctx.author, "Requester failed inspect (configured never-pass target)")
+        await bot.send_character_message(
+            ctx.channel,
+            "inspect_fail",
+            bot.config.responses.inspect_lose,
+            {"target": target_member.mention},
+        )
+        return
+
+    if bot.is_always_pass_user(target_member.id):
+        guild = ctx.guild
+        if guild is None:
+            return
+        role = bot.resolve_btgo_role(guild)
+        member = target_member if isinstance(target_member, discord.Member) else ctx.author
+        await bot.apply_btgo_to_members(role, [member], "Configured always-pass user")
+        await bot.send_character_message(
+            ctx.channel,
+            "inspect_success",
+            bot.config.responses.inspect_win,
+            {"target": member.mention},
+        )
+        return
+
     if isinstance(target_member, discord.Member) and bot.user_has_btgo_role(target_member):
         await bot.send_character_message(
             ctx.channel,
@@ -452,6 +613,8 @@ async def inspect_command(ctx: commands.Context[Any], target: Optional[discord.M
         return
 
     if random.uniform(0, 100) >= bot.config.inspect_success_percent:
+        if ctx.guild is not None and isinstance(ctx.author, discord.Member):
+            await bot.assign_ibtc_role_to_member(ctx.guild, ctx.author, "Requester failed inspect")
         await bot.send_character_message(
             ctx.channel,
             "inspect_fail",
@@ -463,7 +626,7 @@ async def inspect_command(ctx: commands.Context[Any], target: Optional[discord.M
     guild = ctx.guild
     if guild is None:
         return
-    role = bot.resolve_role(guild)
+    role = bot.resolve_btgo_role(guild)
     member = target_member if isinstance(target_member, discord.Member) else ctx.author
     await bot.apply_btgo_to_members(role, [member], "Manual inspect success")
     await bot.send_character_message(

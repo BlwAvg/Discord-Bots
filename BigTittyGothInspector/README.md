@@ -17,6 +17,8 @@ A Python Discord bot that runs a daily BTGO role shuffle and supports manual ins
 - `!inspect` success chance is configurable via `INSPECT_SUCCESS_PERCENT`.
 - Optional OpenAI response generation for in-character replies.
 - Configurable AI response percentage when AI mode is enabled.
+- Configurable OpenAI timeout to avoid long AI waits.
+- Rich AI diagnostics in logs (success/failure/empty response/fallback and timings).
 - Mentions use AI-generated role-aware tone when AI mode is enabled (favorable for BTGO holders, disdain for others).
 - Periodic IBTC taunts select one random IBTC member to mention at configurable intervals.
 - Runtime logs are written under `data/`.
@@ -66,12 +68,14 @@ Manual entrypoint: `python -u bigtittygothinspector.py`
 ## Notes
 
 - Daily state is stored in `data/state.json`.
-- Bot runtime logs are written to `data/bot.log`.
+- Bot runtime logs are written to `BOT_LOG_PATH` (default `log/bot.log` under this app directory).
 - Launcher logs are written to `data/start.log`.
 - Installer logs are written to `data/install.log`.
 - Scheduled daily shuffles do not post a separate announcement message.
 - If AI responses are enabled but OpenAI fails, bot falls back to canned responses.
 - `AI_RESPONSE_PERCENT` controls how often AI is attempted when AI is enabled.
+- `OPENAI_TIMEOUT_SECONDS` controls max wait per AI request before fallback.
+- Set `LOG_AI_PAYLOAD=true` to log prompt payloads during debugging (avoid in shared/public logs).
 - Mention replies try AI first and include the user's message content for context.
 - `IBTC_TAUNT_INTERVAL_MINUTES` controls approximate taunt cadence with randomized spacing.
 - `IBTC_TAUNT_CHANNEL_ID` is optional; if omitted, bot uses system channel or first writable text channel.

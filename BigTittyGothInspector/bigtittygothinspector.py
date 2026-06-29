@@ -4,11 +4,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import random
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, AsyncIterator, Iterable, Optional
 from zoneinfo import ZoneInfo
 
 import discord
@@ -19,9 +20,14 @@ from config_parse import Config, load_config
 
 DATA_DIR = Path("data")
 STATE_PATH = DATA_DIR / "state.json"
-BOT_LOG_PATH = DATA_DIR / "bot.log"
+APP_DIR = Path(__file__).resolve().parent
+BOT_LOG_PATH_ENV = os.getenv("BOT_LOG_PATH", "log/bot.log").strip() or "log/bot.log"
+BOT_LOG_PATH = Path(BOT_LOG_PATH_ENV)
+if not BOT_LOG_PATH.is_absolute():
+    BOT_LOG_PATH = (APP_DIR / BOT_LOG_PATH).resolve()
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+BOT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 logging.basicConfig(
@@ -33,6 +39,17 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("btgo")
+
+
+@contextlib.asynccontextmanager
+async def maybe_typing(destination: discord.abc.Messageable) -> AsyncIterator[None]:
+    """Show typing indicator where supported while we wait on slower operations."""
+    typing_factory = getattr(destination, "typing", None)
+    if callable(typing_factory):
+        async with typing_factory():
+            yield
+        return
+    yield
 
 
 def load_state() -> dict[str, Any]:
@@ -82,7 +99,10 @@ class BtgoBot(commands.Bot):
         self.state = load_state()
         self.timezone = ZoneInfo(config.timezone)
         self.openai_client = (
-            AsyncOpenAI(api_key=config.openai_api_key)
+            AsyncOpenAI(
+                api_key=config.openai_api_key,
+                timeout=config.openai_timeout_seconds,
+            )
             if config.enable_ai_responses and config.openai_api_key
             else None
         )
@@ -129,14 +149,22 @@ class BtgoBot(commands.Bot):
         values: Optional[dict[str, Any]] = None,
     ) -> str:
         values = values or {}
+        start_time = asyncio.get_running_loop().time()
         fallback = format_with_vars(self.pick_response(response_pool), values)
 
         if not self.should_use_ai():
+            logger.info(
+                "AI skipped for context=%s (enabled=%s percent=%s); using fallback.",
+                context_name,
+                bool(self.openai_client),
+                self.config.ai_response_percent,
+            )
             return fallback
 
         try:
             openai_client = self.openai_client
             if openai_client is None:
+                logger.warning("AI selected for context=%s but OpenAI client is unavailable.", context_name)
                 return fallback
 
             variable_lines = "\n".join(f"{key}: {value}" for key, value in values.items())
@@ -148,6 +176,9 @@ class BtgoBot(commands.Bot):
             if variable_lines:
                 prompt.append(f"Variables:\n{variable_lines}")
 
+            if self.config.log_ai_payload:
+                logger.info("AI request context=%s prompt=%s", context_name, " | ".join(prompt))
+
             completion = await openai_client.responses.create(
                 model=self.config.openai_model,
                 input=[
@@ -156,8 +187,32 @@ class BtgoBot(commands.Bot):
                 ],
             )
             output = (completion.output_text or "").strip()
-            return output or fallback
+            elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
+            if output:
+                logger.info(
+                    "AI response success context=%s model=%s elapsed_ms=%.0f response_chars=%s",
+                    context_name,
+                    self.config.openai_model,
+                    elapsed_ms,
+                    len(output),
+                )
+                return output
+
+            logger.warning(
+                "AI response empty context=%s model=%s elapsed_ms=%.0f; using fallback.",
+                context_name,
+                self.config.openai_model,
+                elapsed_ms,
+            )
+            return fallback
         except Exception:
+            elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
+            logger.exception(
+                "AI response failed context=%s model=%s elapsed_ms=%.0f; using fallback.",
+                context_name,
+                self.config.openai_model,
+                elapsed_ms,
+            )
             return fallback
 
     async def send_character_message(
@@ -167,8 +222,18 @@ class BtgoBot(commands.Bot):
         response_pool: list[str],
         values: Optional[dict[str, Any]] = None,
     ) -> discord.Message:
-        content = await self.build_character_response(context_name, response_pool, values)
-        return await destination.send(content)
+        start_time = asyncio.get_running_loop().time()
+        async with maybe_typing(destination):
+            content = await self.build_character_response(context_name, response_pool, values)
+            sent = await destination.send(content)
+        elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
+        logger.info(
+            "Message sent context=%s elapsed_ms=%.0f chars=%s",
+            context_name,
+            elapsed_ms,
+            len(content),
+        )
+        return sent
 
     async def fetch_target_guild(self) -> discord.Guild:
         guild = self.get_guild(self.config.guild_id)
@@ -396,6 +461,7 @@ class BtgoBot(commands.Bot):
                 logger.exception("Scheduled shuffle failed.")
 
     async def generate_mention_reply(self, message: discord.Message, has_btgo_role: bool) -> str:
+        start_time = asyncio.get_running_loop().time()
         if not self.openai_client:
             response_pool = self.config.responses.mention_uwu if has_btgo_role else self.config.responses.mention_mean
             return await self.build_character_response("mention", response_pool)
@@ -404,6 +470,12 @@ class BtgoBot(commands.Bot):
         user_content = message.content.strip() or "(no text, mention only)"
 
         try:
+            logger.info(
+                "Mention AI request user_id=%s btgo=%s model=%s",
+                message.author.id,
+                has_btgo_role,
+                self.config.openai_model,
+            )
             completion = await self.openai_client.responses.create(
                 model=self.config.openai_model,
                 input=[
@@ -420,9 +492,27 @@ class BtgoBot(commands.Bot):
             )
             output = (completion.output_text or "").strip()
             if output:
+                elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
+                logger.info(
+                    "Mention AI response success user_id=%s elapsed_ms=%.0f chars=%s",
+                    message.author.id,
+                    elapsed_ms,
+                    len(output),
+                )
                 return output
+            elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
+            logger.warning(
+                "Mention AI response empty user_id=%s elapsed_ms=%.0f; falling back.",
+                message.author.id,
+                elapsed_ms,
+            )
         except Exception:
-            logger.exception("AI mention reply failed; falling back to canned/templated response.")
+            elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
+            logger.exception(
+                "AI mention reply failed user_id=%s elapsed_ms=%.0f; falling back.",
+                message.author.id,
+                elapsed_ms,
+            )
 
         fallback_pool = self.config.responses.mention_uwu if has_btgo_role else self.config.responses.mention_mean
         return await self.build_character_response("mention", fallback_pool)
@@ -487,11 +577,21 @@ async def on_ready() -> None:
         )
     )
     logger.info("Logged in as %s", bot.user)
+    logger.info(
+        "AI config enabled=%s api_key_present=%s model=%s timeout_seconds=%.1f ai_percent=%s",
+        bot.config.enable_ai_responses,
+        bool(bot.config.openai_api_key),
+        bot.config.openai_model,
+        bot.config.openai_timeout_seconds,
+        bot.config.ai_response_percent,
+    )
 
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
     """Handle direct messages and mentions."""
+    message_start = asyncio.get_running_loop().time()
+
     # Ignore messages from bots
     if message.author.bot:
         return
@@ -509,8 +609,9 @@ async def on_message(message: discord.Message) -> None:
             has_btgo_role,
             "DM" if isinstance(message.channel, discord.DMChannel) else "guild",
         )
-        mention_reply = await bot.generate_mention_reply(message, has_btgo_role)
-        await message.channel.send(mention_reply)
+        async with maybe_typing(message.channel):
+            mention_reply = await bot.generate_mention_reply(message, has_btgo_role)
+            await message.channel.send(mention_reply)
 
     # Check if this is a DM (direct message)
     elif isinstance(message.channel, discord.DMChannel):
@@ -530,6 +631,13 @@ async def on_message(message: discord.Message) -> None:
 
     # Process commands normally
     await bot.process_commands(message)
+    elapsed_ms = (asyncio.get_running_loop().time() - message_start) * 1000
+    logger.info(
+        "Message handling complete message_id=%s author_id=%s elapsed_ms=%.0f",
+        message.id,
+        message.author.id,
+        elapsed_ms,
+    )
 
 
 @bot.command(name="help")

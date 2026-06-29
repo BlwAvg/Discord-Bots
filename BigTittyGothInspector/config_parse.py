@@ -26,6 +26,13 @@ def _to_percent(value: str | None, fallback: int) -> int:
     return max(0, min(100, _to_int(value, fallback)))
 
 
+def _to_float(value: str | None, fallback: float) -> float:
+    try:
+        return float(value) if value is not None and value != "" else fallback
+    except ValueError:
+        return fallback
+
+
 def _to_list(value: str | None, separator: str = ",") -> List[str]:
     if not value:
         return []
@@ -76,7 +83,9 @@ class Config:
     ai_response_percent: int
     openai_api_key: str
     openai_model: str
+    openai_timeout_seconds: float
     ai_system_prompt: str
+    log_ai_payload: bool
     responses: Responses
 
 
@@ -130,10 +139,12 @@ def load_config() -> Config:
         ai_response_percent=_to_percent(os.getenv("AI_RESPONSE_PERCENT"), 100),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini",
+        openai_timeout_seconds=max(1.0, _to_float(os.getenv("OPENAI_TIMEOUT_SECONDS"), 12.0)),
         ai_system_prompt=os.getenv(
             "AI_SYSTEM_PROMPT",
             "You are a bold, confident goth inspector persona. Keep replies short, playful, dominant, and Discord-safe.",
         ).strip(),
+        log_ai_payload=_to_bool(os.getenv("LOG_AI_PAYLOAD"), False),
         responses=Responses(
             help_intro=_to_responses(
                 os.getenv("HELP_RESPONSES"),

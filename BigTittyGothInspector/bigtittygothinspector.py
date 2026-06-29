@@ -21,7 +21,7 @@ from config_parse import Config, load_config
 DATA_DIR = Path("data")
 STATE_PATH = DATA_DIR / "state.json"
 APP_DIR = Path(__file__).resolve().parent
-BOT_LOG_PATH_ENV = os.getenv("BOT_LOG_PATH", "log/bot.log").strip() or "log/bot.log"
+BOT_LOG_PATH_ENV = os.getenv("BOT_LOG_PATH", "data/bot.log").strip() or "data/bot.log"
 BOT_LOG_PATH = Path(BOT_LOG_PATH_ENV)
 if not BOT_LOG_PATH.is_absolute():
     BOT_LOG_PATH = (APP_DIR / BOT_LOG_PATH).resolve()

@@ -68,7 +68,7 @@ Manual entrypoint: `python -u bigtittygothinspector.py`
 ## Notes
 
 - Daily state is stored in `data/state.json`.
-- Bot runtime logs are written to `BOT_LOG_PATH` (default `log/bot.log` under this app directory).
+- Bot runtime logs are written to `BOT_LOG_PATH` (default `data/bot.log` under this app directory).
 - Launcher logs are written to `data/start.log`.
 - Installer logs are written to `data/install.log`.
 - Scheduled daily shuffles do not post a separate announcement message.

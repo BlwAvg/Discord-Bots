@@ -302,17 +302,40 @@ class BtgoBot(commands.Bot):
         self.state["btgo_role_member_ids"] = []
         save_state(self.state)
 
-    async def clear_ibtc_roles(self, role: discord.Role) -> None:
-        logger.info("Clearing IBTC role from %s current holders.", len(role.members))
+    async def clear_ibtc_roles(self, role: discord.Role, reason: str = "Daily IBTC reset") -> int:
+        cleared_count = len(role.members)
+        logger.info("Clearing IBTC role from %s current holders. reason=%s", cleared_count, reason)
         for member in list(role.members):
-            await member.remove_roles(role, reason="Daily IBTC reset")
+            await member.remove_roles(role, reason=reason)
+        return cleared_count
+
+    async def enforce_ibtc_precedence(self, guild: discord.Guild, member: discord.Member, reason: str) -> bool:
+        btgo_role = self.resolve_btgo_role(guild)
+        ibtc_role = self.resolve_ibtc_role(guild)
+        if btgo_role not in member.roles or ibtc_role not in member.roles:
+            return False
+
+        await member.remove_roles(btgo_role, reason=reason)
+        tracked = set(self.state.get("btgo_role_member_ids", []))
+        if member.id in tracked:
+            tracked.remove(member.id)
+            self.state["btgo_role_member_ids"] = list(tracked)
+            save_state(self.state)
+
+        logger.info(
+            "Enforced IBTC precedence for %s (%s): removed BTGO role.",
+            member.display_name,
+            member.id,
+        )
+        return True
 
     async def assign_ibtc_role_to_member(self, guild: discord.Guild, member: discord.Member, reason: str) -> None:
         role = self.resolve_ibtc_role(guild)
-        if role in member.roles:
-            return
-        await member.add_roles(role, reason=reason)
-        logger.info("Assigned IBTC role to %s for reason '%s'.", member.display_name, reason)
+        if role not in member.roles:
+            await member.add_roles(role, reason=reason)
+            logger.info("Assigned IBTC role to %s for reason '%s'.", member.display_name, reason)
+
+        await self.enforce_ibtc_precedence(guild, member, reason="IBTC precedence after IBTC assignment")
 
     async def get_online_humans(self, guild: discord.Guild) -> list[discord.Member]:
         members = []
@@ -668,6 +691,23 @@ async def on_message(message: discord.Message) -> None:
     )
 
 
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member) -> None:
+    before_role_ids = {role.id for role in before.roles}
+    after_role_ids = {role.id for role in after.roles}
+    if before_role_ids == after_role_ids:
+        return
+
+    try:
+        await bot.enforce_ibtc_precedence(
+            after.guild,
+            after,
+            reason="IBTC precedence role sync",
+        )
+    except Exception:
+        logger.exception("Failed to enforce IBTC precedence for member_id=%s", after.id)
+
+
 @bot.command(name="help")
 async def help_command(ctx: commands.Context[Any]) -> None:
     intro = await bot.build_character_response("help_intro", bot.config.responses.help_intro)
@@ -802,10 +842,19 @@ async def clear_command(ctx: commands.Context[Any]) -> None:
         await ctx.send("Only server admins can use this command.")
         return
 
+    ibtc_role = bot.resolve_ibtc_role(ctx.guild)
+    cleared_ibtc_count = await bot.clear_ibtc_roles(ibtc_role, reason=f"Manual clear command by {ctx.author.id}")
+
     bot.state["inspect_usage_by_user_date"] = {}
     save_state(bot.state)
-    logger.info("Inspect usage cooldown state cleared by admin %s", ctx.author.id)
-    await ctx.send("Inspect cooldown usage has been cleared. Everyone can try !inspect again.")
+    logger.info(
+        "Clear command complete by admin %s; inspect cooldown reset and IBTC cleared_count=%s",
+        ctx.author.id,
+        cleared_ibtc_count,
+    )
+    await ctx.send(
+        f"Cleared IBTC role from {cleared_ibtc_count} member(s). Inspect cooldown usage has also been reset."
+    )
 
 
 @bot.event

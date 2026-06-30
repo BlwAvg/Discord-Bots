@@ -7,9 +7,11 @@ A Python Discord bot that runs a daily BTGO role shuffle and supports manual ins
 - Daily at midnight (configured timezone), clears previous BTGO holders and picks random online users.
 - Chooses a random winner count between configured minimum and maximum (default 2-5).
 - `!inspect [@user]` gives a daily chance to assign BTGO role once per requester per day.
+- Mentioning the bot with `inspect` or `btgo` and mentioning a target user also runs an inspect on that user.
 - `!inspect` failures now assign the configured IBTC role to the user who ran the command.
 - Configurable `ALWAYS_PASS_USER_IDS` and `NEVER_PASS_USER_IDS` affect both `!inspect` and daily BTGO shuffle outcomes.
 - IBTC role holders are also cleared during the daily reset alongside BTGO holders.
+- Hidden `!clear` command (admin only) clears all IBTC holders and resets inspect cooldown usage.
 - `!time` shows when the next daily shuffle happens.
 - `!reshuffle` can be used by allowed user IDs and current BTGO holders.
 - `!help` command explains available commands.
@@ -19,8 +21,11 @@ A Python Discord bot that runs a daily BTGO role shuffle and supports manual ins
 - Configurable AI response percentage when AI mode is enabled.
 - Configurable OpenAI timeout to avoid long AI waits.
 - Rich AI diagnostics in logs (success/failure/empty response/fallback and timings).
+- Logs include readable Discord user/channel names alongside IDs.
 - Mentions use AI-generated role-aware tone when AI mode is enabled (favorable for BTGO holders, disdain for others).
 - Periodic IBTC taunts select one random IBTC member to mention at configurable intervals.
+- If a member ever has both BTGO and IBTC, BTGO is automatically removed and IBTC is kept.
+- Role mutations are guarded so the bot only adds/removes the configured BTGO and IBTC roles.
 - Runtime logs are written under `data/`.
 
 ## Setup
@@ -64,6 +69,7 @@ Manual entrypoint: `python -u bigtittygothinspector.py`
 - `!inspect [@user]`
 - `!time`
 - `!reshuffle`
+- `!clear` (admin only)
 
 ## Notes
 
@@ -77,9 +83,12 @@ Manual entrypoint: `python -u bigtittygothinspector.py`
 - `OPENAI_TIMEOUT_SECONDS` controls max wait per AI request before fallback.
 - Set `LOG_AI_PAYLOAD=true` to log prompt payloads during debugging (avoid in shared/public logs).
 - Mention replies try AI first and include the user's message content for context.
+- Mention messages that include `inspect` or `btgo` and a user mention trigger inspect behavior.
 - `IBTC_TAUNT_INTERVAL_MINUTES` controls approximate taunt cadence with randomized spacing.
 - `IBTC_TAUNT_CHANNEL_ID` is optional; if omitted, bot uses system channel or first writable text channel.
 - IBTC taunts pick one random non-bot member from the IBTC role each time.
+- If a member has both BTGO and IBTC, IBTC takes precedence and BTGO is removed automatically.
+- Bot role mutation paths are restricted to the configured BTGO and IBTC roles only.
 - The bot only selects non-bot users whose status is not `offline`.
 - Users in `NEVER_PASS_USER_IDS` are excluded from daily BTGO winners and always fail `!inspect`.
 - Users in `ALWAYS_PASS_USER_IDS` are always added to daily BTGO winners (when online) and always pass `!inspect`.

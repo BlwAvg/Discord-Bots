@@ -86,6 +86,25 @@ def format_with_vars(template: str, values: dict[str, Any]) -> str:
     return result
 
 
+def format_user_for_log(user: Any) -> str:
+    display_name = getattr(user, "display_name", None) or getattr(user, "name", "unknown-user")
+    user_id = getattr(user, "id", "unknown-id")
+    return f"{display_name} ({user_id})"
+
+
+def format_channel_for_log(channel: discord.abc.Messageable) -> str:
+    channel_id = getattr(channel, "id", "unknown-id")
+    if isinstance(channel, discord.DMChannel):
+        recipient = channel.recipient
+        recipient_name = getattr(recipient, "name", "unknown-recipient")
+        return f"DM:{recipient_name} ({channel_id})"
+
+    channel_name = getattr(channel, "name", None)
+    if channel_name:
+        return f"#{channel_name} ({channel_id})"
+    return f"{type(channel).__name__} ({channel_id})"
+
+
 class BtgoBot(commands.Bot):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.default()
@@ -266,7 +285,7 @@ class BtgoBot(commands.Bot):
     async def fetch_target_guild(self) -> discord.Guild:
         guild = self.get_guild(self.config.guild_id)
         if guild is None:
-            logger.info("Guild %s was not cached; fetching from API.", self.config.guild_id)
+            logger.info("Guild id=%s was not cached; fetching from API.", self.config.guild_id)
             guild = await self.fetch_guild(self.config.guild_id)
         if not isinstance(guild, discord.Guild):
             raise RuntimeError("Configured guild could not be loaded.")
@@ -289,6 +308,31 @@ class BtgoBot(commands.Bot):
     def resolve_ibtc_role(self, guild: discord.Guild) -> discord.Role:
         return self.resolve_configured_role(guild, self.config.ibtc_role_identifier, "IBTC")
 
+    def managed_role_ids(self, guild: discord.Guild) -> set[int]:
+        btgo_role = self.resolve_btgo_role(guild)
+        ibtc_role = self.resolve_ibtc_role(guild)
+        return {btgo_role.id, ibtc_role.id}
+
+    def ensure_managed_role(self, guild: discord.Guild, role: discord.Role, action: str) -> None:
+        if role.id in self.managed_role_ids(guild):
+            return
+
+        logger.error(
+            "Blocked role %s for unmanaged role '%s' (%s).",
+            action,
+            role.name,
+            role.id,
+        )
+        raise RuntimeError(f"Refusing to {action} unmanaged role '{role.name}' ({role.id}).")
+
+    async def safe_add_role(self, member: discord.Member, role: discord.Role, reason: str) -> None:
+        self.ensure_managed_role(member.guild, role, "add")
+        await member.add_roles(role, reason=reason)
+
+    async def safe_remove_role(self, member: discord.Member, role: discord.Role, reason: str) -> None:
+        self.ensure_managed_role(member.guild, role, "remove")
+        await member.remove_roles(role, reason=reason)
+
     def is_never_pass_user(self, user_id: int) -> bool:
         return user_id in self.config.never_pass_user_ids
 
@@ -296,17 +340,19 @@ class BtgoBot(commands.Bot):
         return user_id in self.config.always_pass_user_ids
 
     async def clear_btgo_roles(self, guild: discord.Guild, role: discord.Role) -> None:
+        self.ensure_managed_role(guild, role, "remove")
         logger.info("Clearing BTGO role from %s current holders.", len(role.members))
         for member in list(role.members):
-            await member.remove_roles(role, reason="Daily BTGO reset")
+            await self.safe_remove_role(member, role, reason="Daily BTGO reset")
         self.state["btgo_role_member_ids"] = []
         save_state(self.state)
 
     async def clear_ibtc_roles(self, role: discord.Role, reason: str = "Daily IBTC reset") -> int:
+        self.ensure_managed_role(role.guild, role, "remove")
         cleared_count = len(role.members)
         logger.info("Clearing IBTC role from %s current holders. reason=%s", cleared_count, reason)
         for member in list(role.members):
-            await member.remove_roles(role, reason=reason)
+            await self.safe_remove_role(member, role, reason=reason)
         return cleared_count
 
     async def enforce_ibtc_precedence(self, guild: discord.Guild, member: discord.Member, reason: str) -> bool:
@@ -315,7 +361,7 @@ class BtgoBot(commands.Bot):
         if btgo_role not in member.roles or ibtc_role not in member.roles:
             return False
 
-        await member.remove_roles(btgo_role, reason=reason)
+        await self.safe_remove_role(member, btgo_role, reason=reason)
         tracked = set(self.state.get("btgo_role_member_ids", []))
         if member.id in tracked:
             tracked.remove(member.id)
@@ -332,7 +378,7 @@ class BtgoBot(commands.Bot):
     async def assign_ibtc_role_to_member(self, guild: discord.Guild, member: discord.Member, reason: str) -> None:
         role = self.resolve_ibtc_role(guild)
         if role not in member.roles:
-            await member.add_roles(role, reason=reason)
+            await self.safe_add_role(member, role, reason=reason)
             logger.info("Assigned IBTC role to %s for reason '%s'.", member.display_name, reason)
 
         await self.enforce_ibtc_precedence(guild, member, reason="IBTC precedence after IBTC assignment")
@@ -379,11 +425,12 @@ class BtgoBot(commands.Bot):
         members: Iterable[discord.Member],
         reason: str,
     ) -> None:
+        self.ensure_managed_role(role.guild, role, "add")
         tracked = set(self.state.get("btgo_role_member_ids", []))
         member_list = list(members)
         for member in member_list:
             if role not in member.roles:
-                await member.add_roles(role, reason=reason)
+                await self.safe_add_role(member, role, reason=reason)
             tracked.add(member.id)
         self.state["btgo_role_member_ids"] = list(tracked)
         save_state(self.state)
@@ -464,30 +511,128 @@ class BtgoBot(commands.Bot):
             )
         return winners
 
-    def user_can_reshuffle(self, member: discord.Member) -> bool:
+    async def user_can_reshuffle(self, member: discord.Member) -> bool:
         if member.id in self.config.reshuffle_allowed_user_ids:
-            logger.info("User %s allowed to reshuffle via explicit allowlist.", member.id)
+            logger.info("User %s allowed to reshuffle via explicit allowlist.", format_user_for_log(member))
             return True
-        role = discord.utils.get(member.roles, name=self.config.btgo_role_identifier)
-        if role is not None:
-            logger.info("User %s allowed to reshuffle via BTGO role name match.", member.id)
+        if await self.user_has_btgo_role(member, reason="IBTC precedence during reshuffle check"):
+            logger.info("User %s allowed to reshuffle via BTGO role.", format_user_for_log(member))
             return True
-        if self.config.btgo_role_identifier.isdigit():
-            allowed = any(role.id == int(self.config.btgo_role_identifier) for role in member.roles)
-            if allowed:
-                logger.info("User %s allowed to reshuffle via BTGO role ID match.", member.id)
-            return allowed
-        logger.info("User %s denied reshuffle access.", member.id)
+        logger.info("User %s denied reshuffle access.", format_user_for_log(member))
         return False
 
-    def user_has_btgo_role(self, member: discord.Member) -> bool:
-        """Check if a user has the BTGO role."""
-        role = discord.utils.get(member.roles, name=self.config.btgo_role_identifier)
-        if role is not None:
-            return True
-        if self.config.btgo_role_identifier.isdigit():
-            return any(role.id == int(self.config.btgo_role_identifier) for role in member.roles)
-        return False
+    async def user_has_btgo_role(self, member: discord.Member, reason: str = "IBTC precedence during BTGO check") -> bool:
+        """Check BTGO role with IBTC precedence enforcement."""
+        btgo_role = self.resolve_btgo_role(member.guild)
+        ibtc_role = self.resolve_ibtc_role(member.guild)
+
+        has_btgo = btgo_role in member.roles
+        has_ibtc = ibtc_role in member.roles
+
+        if has_btgo and has_ibtc:
+            await self.enforce_ibtc_precedence(member.guild, member, reason=reason)
+            return False
+        return has_btgo
+
+    def get_mention_inspect_target(self, message: discord.Message) -> Optional[discord.Member]:
+        if message.guild is None or self.user is None:
+            return None
+
+        lowered_content = message.content.lower()
+        if "inspect" not in lowered_content and "btgo" not in lowered_content:
+            return None
+
+        candidates = [
+            member
+            for member in message.mentions
+            if isinstance(member, discord.Member) and member.id != self.user.id and not member.bot
+        ]
+        if not candidates:
+            return None
+        return candidates[0]
+
+    async def process_inspect_request(
+        self,
+        channel: discord.abc.Messageable,
+        requester: discord.Member,
+        target_member: discord.Member,
+        trigger: str,
+    ) -> None:
+        logger.info(
+            "Inspect request trigger=%s requester=%s target=%s channel=%s",
+            trigger,
+            format_user_for_log(requester),
+            format_user_for_log(target_member),
+            format_channel_for_log(channel),
+        )
+
+        today = self.current_date_key()
+        requester_id = str(requester.id)
+        used = self.state.setdefault("inspect_usage_by_user_date", {})
+
+        if used.get(requester_id) == today:
+            await self.send_character_message(
+                channel,
+                "inspect_cooldown",
+                self.config.responses.inspect_cooldown,
+            )
+            return
+
+        used[requester_id] = today
+        save_state(self.state)
+
+        if self.is_never_pass_user(target_member.id):
+            await self.assign_ibtc_role_to_member(
+                requester.guild,
+                requester,
+                "Requester failed inspect (configured never-pass target)",
+            )
+            await self.send_character_message(
+                channel,
+                "inspect_fail",
+                self.config.responses.inspect_lose,
+                {"target": target_member.mention},
+            )
+            return
+
+        if self.is_always_pass_user(target_member.id):
+            role = self.resolve_btgo_role(requester.guild)
+            await self.apply_btgo_to_members(role, [target_member], "Configured always-pass user")
+            await self.send_character_message(
+                channel,
+                "inspect_success",
+                self.config.responses.inspect_win,
+                {"target": target_member.mention},
+            )
+            return
+
+        if await self.user_has_btgo_role(target_member):
+            await self.send_character_message(
+                channel,
+                "inspect_already_btgo",
+                self.config.responses.inspect_already_btgo,
+                {"target": target_member.mention},
+            )
+            return
+
+        if random.uniform(0, 100) >= self.config.inspect_success_percent:
+            await self.assign_ibtc_role_to_member(requester.guild, requester, "Requester failed inspect")
+            await self.send_character_message(
+                channel,
+                "inspect_fail",
+                self.config.responses.inspect_lose,
+                {"target": target_member.mention},
+            )
+            return
+
+        role = self.resolve_btgo_role(requester.guild)
+        await self.apply_btgo_to_members(role, [target_member], "Manual inspect success")
+        await self.send_character_message(
+            channel,
+            "inspect_success",
+            self.config.responses.inspect_win,
+            {"target": target_member.mention},
+        )
 
     async def daily_shuffle_loop(self) -> None:
         await self.wait_until_ready()
@@ -522,8 +667,9 @@ class BtgoBot(commands.Bot):
 
         try:
             logger.info(
-                "Mention AI request user_id=%s btgo=%s model=%s",
-                message.author.id,
+                "Mention AI request user=%s channel=%s btgo=%s model=%s",
+                format_user_for_log(message.author),
+                format_channel_for_log(message.channel),
                 has_btgo_role,
                 self.openai_model,
             )
@@ -545,23 +691,23 @@ class BtgoBot(commands.Bot):
             if output:
                 elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
                 logger.info(
-                    "Mention AI response success user_id=%s elapsed_ms=%.0f chars=%s",
-                    message.author.id,
+                    "Mention AI response success user=%s elapsed_ms=%.0f chars=%s",
+                    format_user_for_log(message.author),
                     elapsed_ms,
                     len(output),
                 )
                 return output
             elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
             logger.warning(
-                "Mention AI response empty user_id=%s elapsed_ms=%.0f; falling back.",
-                message.author.id,
+                "Mention AI response empty user=%s elapsed_ms=%.0f; falling back.",
+                format_user_for_log(message.author),
                 elapsed_ms,
             )
         except Exception:
             elapsed_ms = (asyncio.get_running_loop().time() - start_time) * 1000
             logger.exception(
-                "AI mention reply failed user_id=%s elapsed_ms=%.0f; falling back.",
-                message.author.id,
+                "AI mention reply failed user=%s elapsed_ms=%.0f; falling back.",
+                format_user_for_log(message.author),
                 elapsed_ms,
             )
 
@@ -602,7 +748,7 @@ class BtgoBot(commands.Bot):
 
                 channel = await self.get_ibtc_taunt_channel(guild)
                 if channel is None:
-                    logger.warning("Could not find an IBTC taunt channel in guild %s.", guild.id)
+                    logger.warning("Could not find an IBTC taunt channel in guild %s (%s).", guild.name, guild.id)
                     continue
 
                 await self.send_character_message(
@@ -652,24 +798,33 @@ async def on_message(message: discord.Message) -> None:
         # Determine if author has BTGO role
         has_btgo_role = False
         if isinstance(message.author, discord.Member):
-            has_btgo_role = bot.user_has_btgo_role(message.author)
+            has_btgo_role = await bot.user_has_btgo_role(message.author)
 
         logger.info(
             "Mention received from %s (BTGO: %s) in %s",
-            message.author.id,
+            format_user_for_log(message.author),
             has_btgo_role,
-            "DM" if isinstance(message.channel, discord.DMChannel) else "guild",
+            format_channel_for_log(message.channel),
         )
         async with maybe_typing(message.channel):
-            mention_reply = await bot.generate_mention_reply(message, has_btgo_role)
-            await message.channel.send(mention_reply)
+            mention_inspect_target = bot.get_mention_inspect_target(message)
+            if mention_inspect_target is not None and isinstance(message.author, discord.Member):
+                await bot.process_inspect_request(
+                    message.channel,
+                    message.author,
+                    mention_inspect_target,
+                    "mention",
+                )
+            else:
+                mention_reply = await bot.generate_mention_reply(message, has_btgo_role)
+                await message.channel.send(mention_reply)
 
     # Check if this is a DM (direct message)
     elif isinstance(message.channel, discord.DMChannel):
         # Determine if author has BTGO role (requires member object, DMs don't have it)
         has_btgo_role = False
         if isinstance(message.author, discord.Member):
-            has_btgo_role = bot.user_has_btgo_role(message.author)
+            has_btgo_role = await bot.user_has_btgo_role(message.author)
 
         # Select response pool based on role
         if has_btgo_role:
@@ -677,16 +832,17 @@ async def on_message(message: discord.Message) -> None:
         else:
             response_pool = bot.config.responses.dm_mean
 
-        logger.info("DM received from %s (BTGO: %s)", message.author.id, has_btgo_role)
+        logger.info("DM received from %s (BTGO: %s)", format_user_for_log(message.author), has_btgo_role)
         await bot.send_character_message(message.channel, "dm", response_pool)
 
     # Process commands normally
     await bot.process_commands(message)
     elapsed_ms = (asyncio.get_running_loop().time() - message_start) * 1000
     logger.info(
-        "Message handling complete message_id=%s author_id=%s elapsed_ms=%.0f",
+        "Message handling complete message_id=%s author=%s channel=%s elapsed_ms=%.0f",
         message.id,
-        message.author.id,
+        format_user_for_log(message.author),
+        format_channel_for_log(message.channel),
         elapsed_ms,
     )
 
@@ -705,7 +861,7 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
             reason="IBTC precedence role sync",
         )
     except Exception:
-        logger.exception("Failed to enforce IBTC precedence for member_id=%s", after.id)
+        logger.exception("Failed to enforce IBTC precedence for member=%s", format_user_for_log(after))
 
 
 @bot.command(name="help")
@@ -716,9 +872,11 @@ async def help_command(ctx: commands.Context[Any]) -> None:
         intro,
         "",
         f"{prefix}help - Show commands.",
-        f"{prefix}inspect [@user] - Willing to inspect tittes once per day.",
+        f"{prefix}inspect [@user] - Inspect yourself or one mentioned user once per day.",
+        f"Mention me with 'inspect' or 'btgo' and mention a user to inspect them.",
         f"{prefix}time - Show next daily role shuffle time.",
         f"{prefix}reshuffle - Force reshuffle if you are approved or currently BTGO.",
+        f"{prefix}clear - Admin only; clears IBTC holders and resets inspect cooldown usage.",
     ]
     await ctx.send("\n".join(lines))
 
@@ -736,81 +894,12 @@ async def time_command(ctx: commands.Context[Any]) -> None:
 
 @bot.command(name="inspect")
 async def inspect_command(ctx: commands.Context[Any], target: Optional[discord.Member] = None) -> None:
-    logger.info("Inspect command invoked by %s targeting %s", ctx.author.id, getattr(target, "id", ctx.author.id))
-    today = bot.current_date_key()
-    user_id = str(ctx.author.id)
-    used = bot.state.setdefault("inspect_usage_by_user_date", {})
-
-    if used.get(user_id) == today:
-        await bot.send_character_message(
-            ctx.channel,
-            "inspect_cooldown",
-            bot.config.responses.inspect_cooldown,
-        )
+    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+        logger.warning("Inspect command ignored because context was not a guild member context.")
         return
 
     target_member = target or ctx.author
-    used[user_id] = today
-    save_state(bot.state)
-
-    if bot.is_never_pass_user(target_member.id):
-        if ctx.guild is not None and isinstance(ctx.author, discord.Member):
-            await bot.assign_ibtc_role_to_member(ctx.guild, ctx.author, "Requester failed inspect (configured never-pass target)")
-        await bot.send_character_message(
-            ctx.channel,
-            "inspect_fail",
-            bot.config.responses.inspect_lose,
-            {"target": target_member.mention},
-        )
-        return
-
-    if bot.is_always_pass_user(target_member.id):
-        guild = ctx.guild
-        if guild is None:
-            return
-        role = bot.resolve_btgo_role(guild)
-        member = target_member if isinstance(target_member, discord.Member) else ctx.author
-        await bot.apply_btgo_to_members(role, [member], "Configured always-pass user")
-        await bot.send_character_message(
-            ctx.channel,
-            "inspect_success",
-            bot.config.responses.inspect_win,
-            {"target": member.mention},
-        )
-        return
-
-    if isinstance(target_member, discord.Member) and bot.user_has_btgo_role(target_member):
-        await bot.send_character_message(
-            ctx.channel,
-            "inspect_already_btgo",
-            bot.config.responses.inspect_already_btgo,
-            {"target": target_member.mention},
-        )
-        return
-
-    if random.uniform(0, 100) >= bot.config.inspect_success_percent:
-        if ctx.guild is not None and isinstance(ctx.author, discord.Member):
-            await bot.assign_ibtc_role_to_member(ctx.guild, ctx.author, "Requester failed inspect")
-        await bot.send_character_message(
-            ctx.channel,
-            "inspect_fail",
-            bot.config.responses.inspect_lose,
-            {"target": target_member.mention},
-        )
-        return
-
-    guild = ctx.guild
-    if guild is None:
-        return
-    role = bot.resolve_btgo_role(guild)
-    member = target_member if isinstance(target_member, discord.Member) else ctx.author
-    await bot.apply_btgo_to_members(role, [member], "Manual inspect success")
-    await bot.send_character_message(
-        ctx.channel,
-        "inspect_success",
-        bot.config.responses.inspect_win,
-        {"target": member.mention},
-    )
+    await bot.process_inspect_request(ctx.channel, ctx.author, target_member, "command")
 
 
 @bot.command(name="reshuffle")
@@ -819,8 +908,12 @@ async def reshuffle_command(ctx: commands.Context[Any]) -> None:
         logger.warning("Reshuffle command ignored because context was not a guild member context.")
         return
 
-    logger.info("Reshuffle command invoked by %s in guild %s", ctx.author.id, ctx.guild.id)
-    if not bot.user_can_reshuffle(ctx.author):
+    logger.info(
+        "Reshuffle command invoked by %s in guild=%s",
+        format_user_for_log(ctx.author),
+        ctx.guild.name,
+    )
+    if not await bot.user_can_reshuffle(ctx.author):
         await bot.send_character_message(
             ctx.channel,
             "reshuffle_denied",
@@ -838,7 +931,7 @@ async def clear_command(ctx: commands.Context[Any]) -> None:
         return
 
     if not ctx.author.guild_permissions.administrator:
-        logger.warning("Clear command denied for non-admin user %s", ctx.author.id)
+        logger.warning("Clear command denied for non-admin user %s", format_user_for_log(ctx.author))
         await ctx.send("Only server admins can use this command.")
         return
 
@@ -848,8 +941,9 @@ async def clear_command(ctx: commands.Context[Any]) -> None:
     bot.state["inspect_usage_by_user_date"] = {}
     save_state(bot.state)
     logger.info(
-        "Clear command complete by admin %s; inspect cooldown reset and IBTC cleared_count=%s",
-        ctx.author.id,
+        "Clear command complete by admin %s in channel=%s; inspect cooldown reset and IBTC cleared_count=%s",
+        format_user_for_log(ctx.author),
+        format_channel_for_log(ctx.channel),
         cleared_ibtc_count,
     )
     await ctx.send(

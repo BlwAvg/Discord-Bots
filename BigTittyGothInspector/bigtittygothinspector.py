@@ -383,6 +383,48 @@ class BtgoBot(commands.Bot):
 
         await self.enforce_ibtc_precedence(guild, member, reason="IBTC precedence after IBTC assignment")
 
+    def is_command_channel(self, channel: discord.abc.Messageable) -> bool:
+        if not self.config.command_channel_id:
+            return True
+        return getattr(channel, "id", None) == self.config.command_channel_id
+
+    async def handle_wrong_channel_attempt(self, message: discord.Message) -> bool:
+        """Punish and reject commands/mentions sent outside the configured command channel.
+
+        Returns True if the message was blocked and should not be processed further.
+        """
+        if not self.config.command_channel_id or message.guild is None:
+            return False
+        if self.is_command_channel(message.channel):
+            return False
+
+        is_mention = bool(self.user and self.user.mentioned_in(message))
+        is_command_attempt = message.content.strip().startswith(self.config.command_prefix)
+        if not is_mention and not is_command_attempt:
+            return False
+
+        logger.info(
+            "Blocked wrong-channel interaction from %s in %s",
+            format_user_for_log(message.author),
+            format_channel_for_log(message.channel),
+        )
+
+        if isinstance(message.author, discord.Member):
+            await self.assign_ibtc_role_to_member(
+                message.author.guild,
+                message.author,
+                reason="Spoke to the bot outside the configured command channel",
+            )
+
+        channel_mention = f"<#{self.config.command_channel_id}>"
+        await self.send_character_message(
+            message.channel,
+            "wrong_channel",
+            self.config.responses.wrong_channel,
+            {"channel": channel_mention},
+        )
+        return True
+
     async def get_online_humans(self, guild: discord.Guild) -> list[discord.Member]:
         members = []
         for member in guild.members:
@@ -793,6 +835,10 @@ async def on_message(message: discord.Message) -> None:
     if message.author.bot:
         return
 
+    # Reject commands/mentions sent outside the configured command channel
+    if await bot.handle_wrong_channel_attempt(message):
+        return
+
     # Check if bot is mentioned in the message
     if bot.user and bot.user.mentioned_in(message):
         # Determine if author has BTGO role
@@ -878,6 +924,8 @@ async def help_command(ctx: commands.Context[Any]) -> None:
         f"{prefix}reshuffle - Force reshuffle if you are approved or currently BTGO.",
         f"{prefix}clear - Admin only; clears IBTC holders and resets inspect cooldown usage.",
     ]
+    if bot.config.command_channel_id:
+        lines.append(f"You are only allowed to talk to me in <#{bot.config.command_channel_id}>.")
     await ctx.send("\n".join(lines))
 
 

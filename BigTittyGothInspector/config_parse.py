@@ -61,6 +61,7 @@ class Responses:
     dm_mean: List[str]
     dm_uwu: List[str]
     ibtc_taunt: List[str]
+    wrong_channel: List[str]
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class Config:
     ibtc_role_identifier: str
     ibtc_taunt_channel_id: int
     ibtc_taunt_interval_minutes: int
+    command_channel_id: int
     command_prefix: str
     timezone: str
     daily_min_winners: int
@@ -96,6 +98,7 @@ def load_config() -> Config:
     ibtc_role_identifier = os.getenv("IBTC_ROLE_ID", "").strip()
     ibtc_taunt_channel_id = _to_int(os.getenv("IBTC_TAUNT_CHANNEL_ID"), 0)
     ibtc_taunt_interval_minutes = max(1, _to_int(os.getenv("IBTC_TAUNT_INTERVAL_MINUTES"), 60))
+    command_channel_id = _to_int(os.getenv("COMMAND_CHANNEL_ID"), 0)
     command_prefix = os.getenv("COMMAND_PREFIX", "!").strip() or "!"
     timezone = os.getenv("TIMEZONE", "UTC").strip() or "UTC"
     daily_min = max(1, _to_int(os.getenv("DAILY_MIN_WINNERS"), 2))
@@ -127,6 +130,7 @@ def load_config() -> Config:
         ibtc_role_identifier=ibtc_role_identifier,
         ibtc_taunt_channel_id=ibtc_taunt_channel_id,
         ibtc_taunt_interval_minutes=ibtc_taunt_interval_minutes,
+        command_channel_id=command_channel_id,
         command_prefix=command_prefix,
         timezone=timezone,
         daily_min_winners=daily_min,
@@ -268,6 +272,14 @@ def load_config() -> Config:
                     "{target} step forward from {role}. Your inspection score is still embarrassing.",
                     "Attention {target}: another day, another L for your committee.",
                     "{target} report in. We are auditing your bad decisions again.",
+                ],
+            ),
+            wrong_channel=_to_responses(
+                os.getenv("WRONG_CHANNEL_RESPONSES"),
+                [
+                    "Wrong channel, tiny tit material. Take your business to {channel}.",
+                    "You don't get to speak to me here. Tiny tits energy for not using {channel}.",
+                    "This isn't the inspection chamber. Tiny tit material for talking outside {channel}.",
                 ],
             ),
         ),

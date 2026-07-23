@@ -27,6 +27,7 @@ A Python Discord bot that runs a daily BTGO role shuffle and supports manual ins
 - If a member ever has both BTGO and IBTC, BTGO is automatically removed and IBTC is kept.
 - Role mutations are guarded so the bot only adds/removes the configured BTGO and IBTC roles.
 - Runtime logs are written under `data/`.
+- Optional `COMMAND_CHANNEL_ID` restricts commands and mentions to a single channel; talking to the bot outside it assigns the IBTC role and taunts the user as "tiny tit material".
 
 ## Setup
 
@@ -90,6 +91,7 @@ Manual entrypoint: `python -u bigtittygothinspector.py`
 - If a member has both BTGO and IBTC, IBTC takes precedence and BTGO is removed automatically.
 - Bot role mutation paths are restricted to the configured BTGO and IBTC roles only.
 - The bot only selects non-bot users whose status is not `offline`.
+- `COMMAND_CHANNEL_ID` is optional; if omitted, commands and mentions work in any channel. When set, commands/mentions outside that channel are blocked, the author is assigned the IBTC role, and the bot replies from `WRONG_CHANNEL_RESPONSES` (supports a `{channel}` placeholder).
 - Users in `NEVER_PASS_USER_IDS` are excluded from daily BTGO winners and always fail `!inspect`.
 - Users in `ALWAYS_PASS_USER_IDS` are always added to daily BTGO winners (when online) and always pass `!inspect`.
 - Manual `!reshuffle` uses the guild where the command is invoked.
